@@ -231,11 +231,12 @@
           codeTop: "58px",
           popoverTop: "82px",
           focus: 7,
-          title: "Ownership moved",
-          summary: "The value is transferred to a new owner at this expression.",
+          title: "Move or call",
+          summary: "RustOwl marks this as an ownership-sensitive move or call site.",
           facts: [
-            ["Afterward", "the moved place is unavailable until reinitialized"],
-            ["Alternative", "borrow the value when the receiver does not need ownership"]
+            ["By value", "a non-Copy argument transfers ownership to the callee"],
+            ["By reference", "the owner remains available after the borrow ends"],
+            ["Check", "the callee signature decides which case applies"]
           ],
           report: "variable moved",
           also: [],
@@ -246,7 +247,7 @@
             ``,
             `<span class="kw">fn</span> <span class="fn">main</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">payload</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"signed token"</span>);`,
-            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint">← ownership moved · source unavailable</span>`,
+            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint">← move / call · check ownership</span>`,
             `    <span class="macro">println!</span>(<span class="str">"{</span><span class="u-red">payload</span><span class="str">}"</span>);`,
             `}`
           ]

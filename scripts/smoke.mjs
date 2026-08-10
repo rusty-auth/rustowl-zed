@@ -140,13 +140,17 @@ async function main() {
       },
     },
   });
+  await delay(500);
+  send({
+    jsonrpc: "2.0",
+    method: "textDocument/didSave",
+    params: { textDocument: { uri: sourceUri } },
+  });
 
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 30_000;
+  let lastTokenCount = 0;
+  let lastLabels = [];
   while (Date.now() < deadline) {
-    const hover = await request("textDocument/hover", {
-      textDocument: { uri: sourceUri },
-      position: { line: 2, character: 22 },
-    });
     const tokens = await request("textDocument/semanticTokens/full", {
       textDocument: { uri: sourceUri },
     });
@@ -157,27 +161,40 @@ async function main() {
         end: { line: 100, character: 0 },
       },
     });
-    const richHint = hints.find(
+    const richHints = hints.filter(
       (hint) =>
         typeof hint.label === "string" &&
         hint.label.includes(" · ") &&
         hint.tooltip?.kind === "markdown" &&
         hint.tooltip.value.includes("### RustOwl ·"),
     );
-    if (
-      tokens.data.length > 0 &&
-      richHint &&
-      hover?.contents?.kind === "markdown" &&
-      hover.contents.value.includes("### RustOwl ·")
-    ) {
-      console.log(
-        `RustOwl adapter smoke test passed (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
-      );
-      return;
+    const labels = new Set(richHints.map((hint) => hint.label));
+    lastTokenCount = tokens.data.length / 5;
+    lastLabels = [...labels];
+    const hasMultipleOwnershipEvents =
+      labels.size >= 2 &&
+      labels.has("← shared borrow · read-only") &&
+      [...labels].some((label) => label.startsWith("← call result ·"));
+    if (tokens.data.length > 0 && hasMultipleOwnershipEvents) {
+      const hover = await request("textDocument/hover", {
+        textDocument: { uri: sourceUri },
+        position: { line: 2, character: 22 },
+      });
+      if (
+        hover?.contents?.kind === "markdown" &&
+        hover.contents.value.includes("### RustOwl ·")
+      ) {
+        console.log(
+          `RustOwl adapter smoke test passed without hover activation (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
+        );
+        return;
+      }
     }
     await delay(250);
   }
-  throw new Error("RustOwl returned no visual decorations before the timeout");
+  throw new Error(
+    `RustOwl automatic visuals timed out (${lastTokenCount} underlines, labels: ${lastLabels.join(", ") || "none"})`,
+  );
 }
 
 try {

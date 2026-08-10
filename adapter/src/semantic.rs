@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fs};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,7 +28,7 @@ pub struct Range {
     pub end: Position,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Decoration {
     #[serde(rename = "type")]
     pub kind: String,
@@ -61,6 +64,20 @@ struct Token {
     start: u32,
     length: u32,
     token_type: u32,
+}
+
+#[derive(Debug)]
+struct HintCandidate {
+    position: Position,
+    label: String,
+    tooltip: Option<String>,
+    priority: u8,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FlowEvent {
+    position: Position,
+    label: &'static str,
 }
 
 pub fn semantic_tokens(uri: &str, decorations: &[Decoration]) -> Vec<u32> {
@@ -104,31 +121,63 @@ pub fn semantic_tokens(uri: &str, decorations: &[Decoration]) -> Vec<u32> {
     encoded
 }
 
-pub fn inlay_hints(requested_range: Range, decorations: &[Decoration]) -> Vec<Value> {
-    let mut seen = HashSet::new();
-    let mut hints = Vec::new();
+pub fn inlay_hints(uri: &str, requested_range: Range, decorations: &[Decoration]) -> Vec<Value> {
+    let source = source_for_uri(uri);
+    let mut per_line = BTreeMap::new();
     for decoration in decorations
         .iter()
         .filter(|decoration| !decoration.overlapped)
     {
-        let Some(label) = inlay_label(&decoration.kind) else {
+        let Some(presentation) = decoration_presentation(&decoration.kind) else {
+            continue;
+        };
+        let Some(label) = presentation.inlay_label else {
             continue;
         };
         let position = decoration.range.end;
         if position < requested_range.start || requested_range.end < position {
             continue;
         }
-        let identity = (position, label);
-        if !seen.insert(identity) {
-            continue;
+
+        upsert_hint(
+            &mut per_line,
+            HintCandidate {
+                position,
+                label: label.into(),
+                tooltip: decoration_markdown(decoration),
+                priority: presentation.priority,
+            },
+        );
+    }
+
+    if let Some(source) = source.as_deref() {
+        for await_position in await_positions_in_source(source) {
+            if await_position < requested_range.start || requested_range.end < await_position {
+                continue;
+            }
+            if let Some(candidate) = async_hint(await_position, decorations) {
+                upsert_hint(&mut per_line, candidate);
+            }
         }
+    }
+
+    let mut hints = Vec::new();
+    for (line, candidate) in per_line {
+        let line_end = source
+            .as_deref()
+            .and_then(|source| source.lines().nth(line as usize))
+            .map(|line| line.encode_utf16().count() as u32)
+            .map(|character| Position { line, character });
+        let position = line_end
+            .filter(|position| *position <= requested_range.end)
+            .unwrap_or(candidate.position);
 
         let mut hint = serde_json::Map::from_iter([
             ("position".into(), serde_json::to_value(position).unwrap()),
-            ("label".into(), Value::String(label.into())),
+            ("label".into(), Value::String(candidate.label)),
             ("paddingLeft".into(), Value::Bool(true)),
         ]);
-        if let Some(tooltip) = decoration_markdown(decoration) {
+        if let Some(tooltip) = candidate.tooltip {
             hint.insert(
                 "tooltip".into(),
                 serde_json::json!({"kind": "markdown", "value": tooltip}),
@@ -137,6 +186,226 @@ pub fn inlay_hints(requested_range: Range, decorations: &[Decoration]) -> Vec<Va
         hints.push(Value::Object(hint));
     }
     hints
+}
+
+fn upsert_hint(per_line: &mut BTreeMap<u32, HintCandidate>, candidate: HintCandidate) {
+    match per_line.entry(candidate.position.line) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if candidate.priority > entry.get().priority {
+                entry.insert(candidate);
+            }
+        }
+    }
+}
+
+pub fn identifier_positions(uri: &str, requested_range: Range) -> Vec<Position> {
+    source_for_uri(uri)
+        .map(|source| identifier_positions_in_source(&source, requested_range))
+        .unwrap_or_default()
+}
+
+fn identifier_positions_in_source(source: &str, requested_range: Range) -> Vec<Position> {
+    let mut positions = Vec::new();
+    for (line_number, line) in source.lines().enumerate() {
+        let line_number = line_number as u32;
+        if line_number < requested_range.start.line || line_number > requested_range.end.line {
+            continue;
+        }
+
+        let mut characters = line.chars().peekable();
+        let mut utf16_column = 0_u32;
+        while let Some(character) = characters.next() {
+            let start = utf16_column;
+            utf16_column += character.len_utf16() as u32;
+            if !is_identifier_start(character) {
+                continue;
+            }
+
+            let mut identifier = String::from(character);
+            while let Some(next) = characters.peek().copied() {
+                if !is_identifier_continue(next) {
+                    break;
+                }
+                characters.next();
+                identifier.push(next);
+                utf16_column += next.len_utf16() as u32;
+            }
+
+            let position = Position {
+                line: line_number,
+                character: start,
+            };
+            if requested_range.start <= position
+                && position <= requested_range.end
+                && !is_rust_keyword(&identifier)
+            {
+                positions.push(position);
+            }
+        }
+    }
+    positions
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character == '_' || character.is_alphabetic()
+}
+
+fn is_identifier_continue(character: char) -> bool {
+    character == '_' || character.is_alphanumeric()
+}
+
+fn is_rust_keyword(identifier: &str) -> bool {
+    matches!(
+        identifier,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "union"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "yield"
+    )
+}
+
+fn await_positions_in_source(source: &str) -> Vec<Position> {
+    let mut positions = Vec::new();
+    for (line_number, line) in source.lines().enumerate() {
+        let mut offset = 0;
+        while let Some(relative) = line[offset..].find(".await") {
+            let byte_index = offset + relative;
+            let after = byte_index + ".await".len();
+            if line[after..]
+                .chars()
+                .next()
+                .is_some_and(is_identifier_continue)
+            {
+                offset = after;
+                continue;
+            }
+            positions.push(Position {
+                line: line_number as u32,
+                character: line[..byte_index + 1].encode_utf16().count() as u32,
+            });
+            offset = after;
+        }
+    }
+    positions
+}
+
+fn async_hint(position: Position, decorations: &[Decoration]) -> Option<HintCandidate> {
+    let touches_tracked_state = decorations.iter().any(|decoration| {
+        !decoration.overlapped
+            && decoration.range.start.line <= position.line
+            && position.line <= decoration.range.end.line
+            && matches!(
+                decoration.kind.as_str(),
+                "lifetime"
+                    | "definitely_live"
+                    | "maybe_initialized"
+                    | "imm_borrow"
+                    | "mut_borrow"
+                    | "outlive"
+            )
+    });
+    if !touches_tracked_state {
+        return None;
+    }
+
+    Some(HintCandidate {
+        position,
+        label: "← live across .await · stored in future".into(),
+        tooltip: Some(
+            "### RustOwl · State crosses `.await`\n\nOne or more RustOwl-tracked values remain live while this future may be suspended.\n\n- **State machine** · live values and references are retained inside the generated future\n- **Borrowing** · owners and exclusivity must remain valid until the relevant uses finish\n- **Cancellation** · dropping the future also drops state it retains\n- **Spawn check** · detached tasks may additionally require the future to be `Send + 'static`"
+                .into(),
+        ),
+        priority: 120,
+    })
+}
+
+pub fn ownership_flow_markdown(uri: &str, decorations: &[Decoration]) -> Option<String> {
+    let mut events: Vec<_> = decorations
+        .iter()
+        .filter(|decoration| !decoration.overlapped)
+        .filter_map(|decoration| {
+            let label = match decoration.kind.as_str() {
+                "call" => "call / value produced",
+                "imm_borrow" => "shared borrow",
+                "mut_borrow" => "exclusive borrow",
+                "move" => "move / call",
+                "outlive" => "must outlive",
+                "shared_mut" => "borrow conflict",
+                _ => return None,
+            };
+            Some(FlowEvent {
+                position: decoration.range.start,
+                label,
+            })
+        })
+        .collect();
+
+    if let Some(source) = source_for_uri(uri) {
+        events.extend(
+            await_positions_in_source(&source)
+                .into_iter()
+                .filter(|position| async_hint(*position, decorations).is_some())
+                .map(|position| FlowEvent {
+                    position,
+                    label: "await / suspend",
+                }),
+        );
+    }
+
+    events.sort_unstable();
+    events.dedup();
+    let mut nodes: Vec<_> = events
+        .into_iter()
+        .map(|event| format!("`L{} {}`", event.position.line + 1, event.label))
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    if nodes.len() > 8 {
+        let tail = nodes.split_off(nodes.len() - 3);
+        nodes.truncate(4);
+        nodes.push("`…`".into());
+        nodes.extend(tail);
+    }
+    Some(format!("**Flow** · {}", nodes.join(" → ")))
 }
 
 pub fn position_for_rustowl(uri: &str, position: Position) -> Position {
@@ -176,10 +445,6 @@ fn token_type(kind: &str) -> Option<u32> {
         "outlive" | "shared_mut" => Some(5),
         _ => None,
     }
-}
-
-fn inlay_label(kind: &str) -> Option<&'static str> {
-    decoration_presentation(kind)?.inlay_label
 }
 
 pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
@@ -257,7 +522,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ("Mutation", "blocked until the last shared use ends"),
             ],
             inlay_label: Some("← shared borrow · read-only"),
-            priority: 60,
+            priority: 90,
         }),
         "mut_borrow" => Some(DecorationPresentation {
             title: "Exclusive borrow",
@@ -277,22 +542,23 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ),
             ],
             inlay_label: Some("← exclusive borrow · writable"),
-            priority: 70,
+            priority: 100,
         }),
         "move" => Some(DecorationPresentation {
-            title: "Ownership moved",
-            summary: "The value is transferred to a new owner at this expression.",
+            title: "Move or call",
+            summary: "RustOwl marks this as an ownership-sensitive move or call site.",
             facts: &[
                 (
-                    "Afterward",
-                    "the moved place is unavailable until reinitialized",
+                    "By value",
+                    "a non-Copy argument transfers ownership to the callee",
                 ),
                 (
-                    "Alternative",
-                    "borrow the value when the receiver does not need ownership",
+                    "By reference",
+                    "the owner remains available after the shared or exclusive borrow ends",
                 ),
+                ("Check", "the callee signature decides which case applies"),
             ],
-            inlay_label: Some("← ownership moved · source unavailable"),
+            inlay_label: Some("← move / call · check ownership"),
             priority: 80,
         }),
         "outlive" => Some(DecorationPresentation {
@@ -309,7 +575,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ),
             ],
             inlay_label: Some("← lifetime required · must stay live"),
-            priority: 90,
+            priority: 105,
         }),
         "shared_mut" => Some(DecorationPresentation {
             title: "Borrow conflict",
@@ -325,7 +591,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ),
             ],
             inlay_label: Some("← borrow conflict · shared + mutable"),
-            priority: 100,
+            priority: 110,
         }),
         _ => None,
     }
@@ -424,8 +690,9 @@ fn utf16_to_char_column(line: &str, utf16_column: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Decoration, Position, Range, decoration_markdown, decoration_presentation, inlay_hints,
-        semantic_tokens,
+        Decoration, Position, Range, async_hint, await_positions_in_source, decoration_markdown,
+        decoration_presentation, identifier_positions_in_source, inlay_hints,
+        ownership_flow_markdown, semantic_tokens,
     };
 
     #[test]
@@ -506,6 +773,7 @@ mod tests {
             overlapped: false,
         }];
         let hints = inlay_hints(
+            "not-a-file-uri",
             Range {
                 start: Position {
                     line: 0,
@@ -519,11 +787,162 @@ mod tests {
             &decorations,
         );
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0]["label"], "← ownership moved · source unavailable");
+        assert_eq!(hints[0]["label"], "← move / call · check ownership");
         let tooltip = hints[0]["tooltip"]["value"].as_str().unwrap();
-        assert!(tooltip.contains("### RustOwl · Ownership moved"));
-        assert!(tooltip.contains("the moved place is unavailable"));
+        assert!(tooltip.contains("### RustOwl · Move or call"));
+        assert!(tooltip.contains("callee signature decides"));
         assert!(tooltip.contains("> **RustOwl report** · variable moved"));
+    }
+
+    #[test]
+    fn keeps_the_highest_value_inline_helper_per_line() {
+        let range = Range {
+            start: Position {
+                line: 4,
+                character: 8,
+            },
+            end: Position {
+                line: 4,
+                character: 13,
+            },
+        };
+        let hints = inlay_hints(
+            "not-a-file-uri",
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 0,
+                },
+            },
+            &[
+                Decoration {
+                    kind: "call".into(),
+                    range,
+                    hover_text: None,
+                    overlapped: false,
+                },
+                Decoration {
+                    kind: "move".into(),
+                    range,
+                    hover_text: None,
+                    overlapped: false,
+                },
+            ],
+        );
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0]["label"], "← move / call · check ownership");
+    }
+
+    #[test]
+    fn finds_visible_identifiers_without_waiting_for_hover() {
+        let source = "fn main() {\n    let token = String::from(\"signed token\");\n    consume(token);\n}\n";
+        let positions = identifier_positions_in_source(
+            source,
+            Range {
+                start: Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: Position {
+                    line: 2,
+                    character: u32::MAX,
+                },
+            },
+        );
+
+        assert!(positions.contains(&Position {
+            line: 1,
+            character: 8,
+        }));
+        assert!(positions.contains(&Position {
+            line: 2,
+            character: 4,
+        }));
+        assert!(positions.contains(&Position {
+            line: 2,
+            character: 12,
+        }));
+        assert!(!positions.contains(&Position {
+            line: 1,
+            character: 4,
+        }));
+    }
+
+    #[test]
+    fn explains_a_borrow_that_crosses_an_async_suspension_point() {
+        let candidate = async_hint(
+            Position {
+                line: 4,
+                character: 18,
+            },
+            &[Decoration {
+                kind: "imm_borrow".into(),
+                range: Range {
+                    start: Position {
+                        line: 3,
+                        character: 8,
+                    },
+                    end: Position {
+                        line: 6,
+                        character: 20,
+                    },
+                },
+                hover_text: Some("immutable borrow".into()),
+                overlapped: false,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(candidate.label, "← live across .await · stored in future");
+        let tooltip = candidate.tooltip.unwrap();
+        assert!(tooltip.contains("State crosses `.await`"));
+        assert!(tooltip.contains("future may be suspended"));
+        assert!(tooltip.contains("`Send + 'static`"));
+    }
+
+    #[test]
+    fn builds_a_compact_multi_call_ownership_flow() {
+        let point = |line: u32, kind: &str| Decoration {
+            kind: kind.into(),
+            range: Range {
+                start: Position { line, character: 4 },
+                end: Position {
+                    line,
+                    character: 12,
+                },
+            },
+            hover_text: None,
+            overlapped: false,
+        };
+        let flow = ownership_flow_markdown(
+            "not-a-file-uri",
+            &[point(1, "call"), point(3, "imm_borrow"), point(8, "move")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            flow,
+            "**Flow** · `L2 call / value produced` → `L4 shared borrow` → `L9 move / call`"
+        );
+    }
+
+    #[test]
+    fn recognizes_real_await_tokens_only() {
+        let positions = await_positions_in_source(
+            "let output = future.await;\nlet method = value.awaiting();\n",
+        );
+        assert_eq!(
+            positions,
+            vec![Position {
+                line: 0,
+                character: 20,
+            }]
+        );
     }
 
     #[test]
@@ -571,8 +990,8 @@ mod tests {
             ),
             (
                 "move",
-                "Ownership moved",
-                Some("← ownership moved · source unavailable"),
+                "Move or call",
+                Some("← move / call · check ownership"),
             ),
             (
                 "call",

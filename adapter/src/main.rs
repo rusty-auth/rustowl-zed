@@ -12,7 +12,8 @@ use anyhow::{Context, Result, bail};
 use protocol::{read_message, write_message};
 use semantic::{
     CursorResponse, Decoration, Position, Range, TOKEN_TYPES, contains, decoration_markdown,
-    decoration_presentation, inlay_hints, position_for_rustowl, range_for_lsp, semantic_tokens,
+    decoration_presentation, identifier_positions, inlay_hints, ownership_flow_markdown,
+    position_for_rustowl, range_for_lsp, semantic_tokens,
 };
 use serde_json::{Map, Value, json};
 use tokio::{
@@ -31,19 +32,32 @@ enum Event {
 }
 
 #[derive(Debug)]
+enum CursorPurpose {
+    Hover(Value),
+    Prefetch,
+}
+
+#[derive(Debug)]
 struct PendingCursor {
-    client_id: Value,
+    purpose: CursorPurpose,
     uri: String,
     position: Position,
+    generation: u64,
 }
+
+const MAX_PREFETCH_POSITIONS: usize = 256;
 
 #[derive(Default)]
 struct State {
     next_internal_id: u64,
     initialize_ids: HashSet<String>,
-    internal_server_ids: HashSet<String>,
+    pending_analyzes: HashMap<String, (String, u64)>,
     internal_client_ids: HashSet<String>,
     pending_cursors: HashMap<String, PendingCursor>,
+    prefetched_positions: HashMap<String, HashSet<Position>>,
+    requested_inlay_ranges: HashMap<String, Range>,
+    analyzed_documents: HashSet<String>,
+    document_generations: HashMap<String, u64>,
     decorations: HashMap<String, Vec<Decoration>>,
 }
 
@@ -273,12 +287,14 @@ where
                     .context("hover request had no position")?,
             )?;
             let cursor_id = state.internal_id("cursor");
+            let generation = document_generation(state, &uri);
             state.pending_cursors.insert(
                 id_key(&cursor_id),
                 PendingCursor {
-                    client_id,
+                    purpose: CursorPurpose::Hover(client_id),
                     uri: uri.clone(),
                     position,
+                    generation,
                 },
             );
             let rustowl_position = position_for_rustowl(&uri, position);
@@ -323,7 +339,8 @@ where
             let uri = message
                 .pointer("/params/textDocument/uri")
                 .and_then(Value::as_str)
-                .context("inlay hint request had no document URI")?;
+                .context("inlay hint request had no document URI")?
+                .to_owned();
             let requested_range: Range = serde_json::from_value(
                 message
                     .pointer("/params/range")
@@ -331,19 +348,40 @@ where
                     .context("inlay hint request had no range")?,
             )?;
             let hints = inlay_hints(
+                &uri,
                 requested_range,
-                state.decorations.get(uri).map(Vec::as_slice).unwrap_or(&[]),
+                state
+                    .decorations
+                    .get(&uri)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
             );
+            state
+                .requested_inlay_ranges
+                .insert(uri.clone(), requested_range);
             write_message(
                 client,
                 &json!({"jsonrpc": "2.0", "id": id, "result": hints}),
             )
-            .await
+            .await?;
+            if state.analyzed_documents.contains(&uri) {
+                schedule_visible_prefetch(&uri, requested_range, state, server).await?;
+            }
+            Ok(())
         }
         Some("textDocument/didSave") => {
+            let uri = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+                .context("save notification had no document URI")?
+                .to_owned();
+            let generation = reset_document_visuals(state, &uri);
+            request_visual_refresh(state, client).await?;
             write_message(server, &message).await?;
             let id = state.internal_id("analyze");
-            state.internal_server_ids.insert(id_key(&id));
+            state
+                .pending_analyzes
+                .insert(id_key(&id), (uri, generation));
             write_message(
                 server,
                 &json!({
@@ -360,7 +398,7 @@ where
                 .pointer("/params/textDocument/uri")
                 .and_then(Value::as_str)
             {
-                state.decorations.remove(uri);
+                reset_document_visuals(state, uri);
                 request_visual_refresh(state, client).await?;
             }
             write_message(server, &message).await
@@ -373,7 +411,7 @@ async fn handle_server_message<C, S>(
     mut message: Value,
     state: &mut State,
     client: &mut C,
-    _server: &mut S,
+    server: &mut S,
 ) -> Result<()>
 where
     C: tokio::io::AsyncWrite + Unpin,
@@ -384,7 +422,16 @@ where
     };
     let key = id_key(&id);
 
-    if state.internal_server_ids.remove(&key) {
+    if let Some((uri, generation)) = state.pending_analyzes.remove(&key) {
+        if let Some(error) = message.get("error") {
+            eprintln!("[rustowl-zed] RustOwl analysis request failed: {error}");
+        } else if document_generation(state, &uri) == generation {
+            state.analyzed_documents.insert(uri.clone());
+            if let Some(requested_range) = state.requested_inlay_ranges.get(&uri).copied() {
+                schedule_visible_prefetch(&uri, requested_range, state, server).await?;
+            }
+            request_visual_refresh(state, client).await?;
+        }
         return Ok(());
     }
     if let Some(pending) = state.pending_cursors.remove(&key) {
@@ -406,11 +453,22 @@ where
     C: tokio::io::AsyncWrite + Unpin,
 {
     if let Some(error) = message.get("error") {
-        return write_message(
-            client,
-            &json!({"jsonrpc": "2.0", "id": pending.client_id, "error": error}),
-        )
-        .await;
+        return match pending.purpose {
+            CursorPurpose::Hover(client_id) => {
+                write_message(
+                    client,
+                    &json!({"jsonrpc": "2.0", "id": client_id, "error": error}),
+                )
+                .await
+            }
+            CursorPurpose::Prefetch => {
+                if has_pending_prefetch(state, &pending.uri, pending.generation) {
+                    Ok(())
+                } else {
+                    request_visual_refresh(state, client).await
+                }
+            }
+        };
     }
 
     let response: CursorResponse = serde_json::from_value(
@@ -428,21 +486,143 @@ where
         })
         .collect();
 
-    let hover = hover_result(
-        pending.position,
-        &lsp_decorations,
-        response.status.as_ref(),
-        response.is_analyzed,
+    if document_generation(state, &pending.uri) != pending.generation {
+        return match pending.purpose {
+            CursorPurpose::Hover(client_id) => {
+                write_message(
+                    client,
+                    &json!({"jsonrpc": "2.0", "id": client_id, "result": null}),
+                )
+                .await
+            }
+            CursorPurpose::Prefetch => Ok(()),
+        };
+    }
+
+    if response.is_analyzed {
+        state.analyzed_documents.insert(pending.uri.clone());
+    }
+    let ownership_flow = ownership_flow_markdown(&pending.uri, &lsp_decorations);
+    merge_decorations(
+        state.decorations.entry(pending.uri.clone()).or_default(),
+        lsp_decorations,
     );
-    state
-        .decorations
-        .insert(pending.uri.clone(), lsp_decorations);
-    write_message(
-        client,
-        &json!({"jsonrpc": "2.0", "id": pending.client_id, "result": hover}),
-    )
-    .await?;
-    request_visual_refresh(state, client).await
+
+    match pending.purpose {
+        CursorPurpose::Hover(client_id) => {
+            let hover = hover_result(
+                pending.position,
+                state
+                    .decorations
+                    .get(&pending.uri)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                response.status.as_ref(),
+                response.is_analyzed,
+                ownership_flow.as_deref(),
+            );
+            write_message(
+                client,
+                &json!({"jsonrpc": "2.0", "id": client_id, "result": hover}),
+            )
+            .await?;
+            request_visual_refresh(state, client).await
+        }
+        CursorPurpose::Prefetch => {
+            if has_pending_prefetch(state, &pending.uri, pending.generation) {
+                Ok(())
+            } else {
+                request_visual_refresh(state, client).await
+            }
+        }
+    }
+}
+
+fn has_pending_prefetch(state: &State, uri: &str, generation: u64) -> bool {
+    state.pending_cursors.values().any(|cursor| {
+        matches!(cursor.purpose, CursorPurpose::Prefetch)
+            && cursor.uri == uri
+            && cursor.generation == generation
+    })
+}
+
+fn merge_decorations(existing: &mut Vec<Decoration>, incoming: Vec<Decoration>) -> bool {
+    let mut seen: HashSet<_> = existing.iter().cloned().collect();
+    let mut changed = false;
+    for decoration in incoming {
+        if seen.insert(decoration.clone()) {
+            existing.push(decoration);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn document_generation(state: &State, uri: &str) -> u64 {
+    state.document_generations.get(uri).copied().unwrap_or(0)
+}
+
+fn reset_document_visuals(state: &mut State, uri: &str) -> u64 {
+    let generation = state
+        .document_generations
+        .entry(uri.to_owned())
+        .or_default();
+    *generation += 1;
+    state.decorations.remove(uri);
+    state.prefetched_positions.remove(uri);
+    state.analyzed_documents.remove(uri);
+    *generation
+}
+
+async fn schedule_visible_prefetch<S>(
+    uri: &str,
+    requested_range: Range,
+    state: &mut State,
+    server: &mut S,
+) -> Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let generation = document_generation(state, uri);
+    let positions = identifier_positions(uri, requested_range);
+    for position in positions {
+        let prefetched = state
+            .prefetched_positions
+            .entry(uri.to_owned())
+            .or_default();
+        if prefetched.len() >= MAX_PREFETCH_POSITIONS {
+            break;
+        }
+        if !prefetched.insert(position) {
+            continue;
+        }
+
+        let cursor_id = state.internal_id("prefetch");
+        state.pending_cursors.insert(
+            id_key(&cursor_id),
+            PendingCursor {
+                purpose: CursorPurpose::Prefetch,
+                uri: uri.to_owned(),
+                position,
+                generation,
+            },
+        );
+        let rustowl_position = position_for_rustowl(uri, position);
+        write_message(
+            server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": cursor_id,
+                "method": "rustowl/cursor",
+                "params": {
+                    "position": rustowl_position,
+                    "document": { "uri": uri }
+                }
+            }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn hover_result(
@@ -450,6 +630,7 @@ fn hover_result(
     decorations: &[Decoration],
     status: Option<&Value>,
     is_analyzed: bool,
+    ownership_flow: Option<&str>,
 ) -> Value {
     let mut matching: Vec<_> = decorations
         .iter()
@@ -467,16 +648,16 @@ fn hover_result(
         return Value::Null;
     }
 
-    let mut sections = Vec::new();
+    let mut markdown = String::new();
     if let Some(primary) = matching.first() {
-        if let Some(markdown) = decoration_markdown(primary) {
-            sections.push(markdown);
+        if let Some(primary_markdown) = decoration_markdown(primary) {
+            markdown = primary_markdown;
         } else if let Some(report) = primary
             .hover_text
             .as_deref()
             .filter(|report| !report.is_empty())
         {
-            sections.push(format!("### RustOwl\n\n> **RustOwl report** · {report}"));
+            markdown = format!("### RustOwl\n\n> **RustOwl report** · {report}");
         }
 
         let mut seen_kinds = HashSet::from([primary.kind.as_str()]);
@@ -488,20 +669,27 @@ fn hover_result(
             let Some(presentation) = decoration_presentation(&decoration.kind) else {
                 continue;
             };
-            let detail = decoration
-                .hover_text
-                .as_deref()
-                .filter(|report| !report.is_empty())
-                .unwrap_or(presentation.summary);
-            also_here.push(format!("- **{}** · {detail}", presentation.title));
+            also_here.push(presentation.title);
         }
         if !also_here.is_empty() {
-            sections.push(format!("#### Also active here\n\n{}", also_here.join("\n")));
+            markdown.push_str(&format!("\n\n**Also active** · {}", also_here.join(" · ")));
         }
     }
 
-    sections.push(analysis_markdown(status, is_analyzed));
-    let markdown = sections.join("\n\n---\n\n");
+    if let Some(ownership_flow) = ownership_flow {
+        if !markdown.is_empty() {
+            markdown.push_str("\n\n");
+        }
+        markdown.push_str(ownership_flow);
+    }
+
+    let analysis = analysis_markdown(status, is_analyzed);
+    if !analysis.is_empty() {
+        if !markdown.is_empty() {
+            markdown.push_str("\n\n");
+        }
+        markdown.push_str(&analysis);
+    }
     let mut result = Map::from_iter([(
         "contents".into(),
         json!({"kind": "markdown", "value": markdown}),
@@ -517,7 +705,7 @@ fn analysis_markdown(status: Option<&Value>, is_analyzed: bool) -> String {
         return "**Analysis** · Waiting for a saved result — save this file to run RustOwl.".into();
     }
     match status.and_then(Value::as_str) {
-        Some("finished") => "**Analysis** · Complete".into(),
+        Some("finished") => String::new(),
         Some("analyzing") => {
             "**Analysis** · Updating — ownership ranges may change shortly.".into()
         }
@@ -593,7 +781,7 @@ mod tests {
 
     use super::{
         Decoration, Position, Range, TOKEN_TYPES, augment_initialize_response, hover_result,
-        sibling_installation_path,
+        merge_decorations, sibling_installation_path,
     };
 
     #[test]
@@ -614,7 +802,7 @@ mod tests {
 
     #[test]
     fn resolves_managed_rustowl_next_to_the_adapter_installation() {
-        let adapter = Path::new("/zed-work/rustowl/adapter-v0.1.2/rustowl-zed-adapter");
+        let adapter = Path::new("/zed-work/rustowl/adapter-v0.1.3/rustowl-zed-adapter");
         let rustowl = Path::new("rustowl-v0.4.0/rustowl");
         assert_eq!(
             sibling_installation_path(adapter, rustowl).unwrap(),
@@ -622,6 +810,49 @@ mod tests {
         );
         assert!(sibling_installation_path(adapter, Path::new("rustowl")).is_none());
         assert!(sibling_installation_path(adapter, Path::new("/usr/local/bin/rustowl")).is_none());
+    }
+
+    #[test]
+    fn merges_ownership_flows_from_multiple_prefetched_values() {
+        let borrow = Decoration {
+            kind: "imm_borrow".into(),
+            range: Range {
+                start: Position {
+                    line: 6,
+                    character: 19,
+                },
+                end: Position {
+                    line: 6,
+                    character: 27,
+                },
+            },
+            hover_text: Some("immutable borrow".into()),
+            overlapped: false,
+        };
+        let moved = Decoration {
+            kind: "move".into(),
+            range: Range {
+                start: Position {
+                    line: 11,
+                    character: 31,
+                },
+                end: Position {
+                    line: 11,
+                    character: 36,
+                },
+            },
+            hover_text: Some("variable moved".into()),
+            overlapped: false,
+        };
+        let mut combined = vec![borrow.clone()];
+
+        assert!(merge_decorations(
+            &mut combined,
+            vec![borrow, moved.clone()]
+        ));
+        assert_eq!(combined.len(), 2);
+        assert!(combined.contains(&moved));
+        assert!(!merge_decorations(&mut combined, vec![moved]));
     }
 
     #[test]
@@ -659,14 +890,16 @@ mod tests {
             &decorations,
             Some(&json!("finished")),
             true,
+            Some("**Flow** · `L3 shared borrow` → `L4 last use`"),
         );
         let markdown = hover["contents"]["value"].as_str().unwrap();
         assert!(markdown.starts_with("### RustOwl · Shared borrow"));
         assert!(markdown.contains("**Ownership** · the source keeps the value"));
         assert!(markdown.contains("> **RustOwl report** · immutable borrow"));
-        assert!(markdown.contains("#### Also active here"));
-        assert!(markdown.contains("**Lifetime region**"));
-        assert!(markdown.ends_with("**Analysis** · Complete"));
+        assert!(markdown.contains("**Also active**"));
+        assert!(markdown.contains("Lifetime region"));
+        assert!(markdown.contains("**Flow** · `L3 shared borrow` → `L4 last use`"));
+        assert!(!markdown.contains("**Analysis**"));
         assert_eq!(hover["range"], json!(range));
     }
 
@@ -680,6 +913,7 @@ mod tests {
             &[],
             Some(&json!("finished")),
             true,
+            None,
         );
         assert!(hover.is_null());
     }
@@ -694,6 +928,7 @@ mod tests {
             &[],
             Some(&json!("finished")),
             false,
+            None,
         );
         assert!(
             hover["contents"]["value"]
