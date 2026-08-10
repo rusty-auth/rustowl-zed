@@ -2,3 +2,43 @@
 	path = engine
 	url = https://github.com/rusty-auth/rustowl-engine.git
 	branch = main
+[submodule "references/pcg"]
+	path = references/pcg
+	url = https://github.com/prusti/pcg.git
+	branch = main
+	shallow = true
+[submodule "references/flowistry"]
+	path = references/flowistry
+	url = https://github.com/willcrichton/flowistry.git
+	branch = master
+	shallow = true
+[submodule "references/aquascope"]
+	path = references/aquascope
+	url = https://github.com/cognitive-engineering-lab/aquascope.git
+	branch = main
+	shallow = true
+[submodule "references/rustviz"]
+	path = references/rustviz
+	url = https://github.com/rustviz/rustviz.git
+	branch = main
+	shallow = true
+[submodule "references/boris"]
+	path = references/boris
+	url = https://github.com/ChristianSchott/boris.git
+	branch = main
+	shallow = true
+[submodule "references/ownsight"]
+	path = references/ownsight
+	url = https://github.com/dedsecrattle/OwnSight.git
+	branch = main
+	shallow = true
+[submodule "references/mind-expander"]
+	path = references/mind-expander
+	url = https://github.com/mbbill/mind-expander.git
+	branch = main
+	shallow = true
+[submodule "references/rust-analyzer"]
+	path = references/rust-analyzer
+	url = https://github.com/rust-lang/rust-analyzer.git
+	branch = master
+	shallow = true

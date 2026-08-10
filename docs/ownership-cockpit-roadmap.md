@@ -30,6 +30,36 @@ The product has four connected surfaces:
 - The engine emits structured data. Mermaid and Markdown are renderers.
 - Upstream RustOwl attribution, history, and MPL-2.0 requirements remain intact.
 
+## Product truth and scope boundaries
+
+RustOwl explains the program's ownership story; rust-analyzer remains the
+editor authority for symbols, types, navigation, completion, and ordinary Rust
+diagnostics. RustOwl adds rustc/MIR/borrow-checker evidence that
+rust-analyzer does not currently expose. The extension must run alongside the
+native Zed Rust language server rather than replace or fork it.
+
+The ownership graph describes static program semantics, not an observed
+runtime execution. It may prove or conservatively describe possible paths, but
+must never claim that a branch executed, that a call target was dynamically
+selected, or that a value contained particular runtime data. Runtime values,
+executed paths, and temporal state would require an explicitly separate
+debugger or instrumentation integration in a later product.
+
+Every user and agent surface follows the same truth contract:
+
+- **compiler-proven** facts may use definitive language;
+- **source-resolved** relationships identify their source-level resolver;
+- **conservative** paths use “may” language and explain the over-approximation;
+- **unresolved** boundaries name what the compiler graph could not connect; and
+- stale facts always name their completed revision and never masquerade as the
+  current unsaved document.
+
+“Live” initially means a responsive presentation of the latest complete
+revision, immediate invalidation of affected regions, and atomic replacement
+after save or a bounded idle debounce. It does not mean running a full
+rustc-quality workspace analysis on every keystroke. Compiler and persistence
+work are cancellable and must never block editing.
+
 ## Target architecture
 
 ```mermaid
@@ -229,6 +259,61 @@ callee identities are represented explicitly rather than silently guessed.
 - `unresolved` — an observed event whose remote endpoint is unknown.
 
 Clients must render the latter three differently from compiler-proven facts.
+
+### Cross-function fidelity ladder
+
+Cross-function ownership is the hardest semantic workstream and is delivered
+in explicit fidelity levels. HelixDB cannot infer missing relationships.
+
+1. Direct free functions and inherent methods with compiler identities.
+2. Argument-to-parameter, receiver, returned-place, and field/projection flow.
+3. Generic monomorphizations and statically resolved trait implementations.
+4. Closures, captured places, async-generated state, and suspension points.
+5. Trait objects, function pointers, macros, FFI, raw pointers, and unsafe
+   boundaries represented as bounded conservative or unresolved edges.
+
+Each level has compiler fixtures and graph snapshots. A query stops at an
+unresolved boundary unless the caller explicitly requests conservative
+expansion. No renderer upgrades uncertainty into a definitive ownership
+transfer.
+
+### Prior art adoption gates
+
+The pinned [`references/`](../references/README.md) projects are a design and
+validation corpus, not production dependencies. Before graph schema version 1
+is frozen, the engine team must publish two architecture decisions:
+
+1. **Place Capability Graph compatibility.** Compare RustOwl's model with PCG
+   capabilities, place projections, lifetime projections, reborrowing,
+   packing/unpacking, branch joins, loop abstractions, nested borrows, and
+   modular call abstractions. Decide whether to integrate a properly licensed
+   PCG release, map compatible PCG concepts into project-owned types, or
+   document why a different representation is required. A weaker ad-hoc model
+   is not an acceptable default.
+2. **Modular ownership summaries.** Prototype Flowistry-style signature-driven
+   summaries and compare them with explicit whole-workspace traversal for
+   precision, dependency coverage, cacheability, and query latency. Prefer
+   modular evidence when it is equivalent; retain deeper compiler evidence
+   when ownership questions require it.
+
+Aquascope, RustViz, BORIS, and OwnSight form the visual-language test corpus.
+mind-expander informs source-backed canvas navigation and agent-guided tours.
+rust-analyzer informs incremental project identity and invalidation while
+remaining the editor's symbol/type authority. Generic syntax and code-graph MCP
+tools form an agent-UX benchmark, but cannot supply MIR places, loans, moves,
+drops, borrow regions, or async suspension state.
+
+The differentiated product acceptance test is the intersection of:
+
+- compiler-grounded ownership facts with visible certainty;
+- a revisioned, persistent Cargo-workspace graph;
+- cross-function move, borrow, mutation, return, and drop paths;
+- explicit async suspension and cancellation explanations; and
+- the exact same bounded evidence in editor and agent surfaces.
+
+Reference source may enter the product only through a separately reviewed,
+license-compatible dependency or an independently implemented published
+interface. Projects with missing or ambiguous license text are study-only.
 
 ## HelixDB integration
 
@@ -453,6 +538,12 @@ analysis has completed:
 These are release gates, not assumptions. Benchmarks record CPU, wall time,
 peak memory, database size, write amplification, and shutdown flush time.
 
+Analysis cadence is measured separately from query latency. The benchmark
+suite records clean-workspace analysis, incremental save analysis, rapid edit
+cancellation, time until stale ranges disappear, and time until a complete
+revision becomes visible. Default debounce and package invalidation policies
+must be justified by these measurements rather than a fixed marketing claim.
+
 ## Reliability and security gates
 
 - Single-writer locking and read-only MCP access.
@@ -478,12 +569,19 @@ Deliverables:
 - stable external-ID rules;
 - schema and certainty documentation;
 - representative workspace fixtures;
-- benchmark corpus and measurement harness; and
-- LSP/MCP JSON contract fixtures.
+- benchmark corpus and measurement harness;
+- LSP/MCP JSON contract fixtures;
+- a PCG semantic compatibility report and schema decision ADR;
+- a modular ownership-summary prototype and Flowistry comparison ADR; and
+- a pinned prior-art manifest with license and provenance boundaries.
 
 Exit criteria:
 
 - graph snapshots are deterministic across repeated analysis;
+- PCG comparison fixtures cover capabilities, partial places, reborrows,
+  nested lifetimes, join points, loop summaries, and call abstractions;
+- modular summaries are compared against explicit traversal on representative
+  workspace calls and dependencies;
 - fixtures cover moves, copies, shared/mutable borrows, fields, branches,
   loops, generics, traits, closures, macros, async/await, cancellation, drops,
   unsafe boundaries, and multi-crate calls.
@@ -495,6 +593,9 @@ Deliverables:
 - extraction from every analyzed file/function;
 - binding/place/event nodes and intra-function edges;
 - direct call/argument/return edges where compiler identity is available;
+- a cross-function fidelity matrix covering direct calls, receivers,
+  parameters, projections, generics, traits, closures, async state, macros,
+  dynamic dispatch, FFI, and unsafe boundaries;
 - explicit unresolved/dynamic edges; and
 - bounded range, trace, and workspace-map queries.
 
@@ -569,6 +670,10 @@ Exit criteria:
 - a fresh extension install exposes RustOwl tools in Zed's profile manager;
 - an enabled Zed Agent can trace a six-function ownership flow and cite the
   exact relevant spans;
+- an enabled Zed Agent can explain a non-`Send` future, identify a borrow that
+  crosses `.await`, assess callers affected by changing a parameter from
+  borrowed to owned, and plan removal of a `clone` without inventing runtime
+  state;
 - an external ACP agent can use the forwarded server where supported;
 - no tool can escape the active project roots or return unbounded output.
 
@@ -622,6 +727,8 @@ Exit criteria:
 - production SLOs pass on the release candidate;
 - clean installs and upgrades pass on every supported target;
 - Agent Panel, editor visuals, and offline fallback are verified end-to-end.
+- all UI and MCP golden tests enforce the shared certainty/freshness language
+  and reject claims about executed branches or runtime values.
 
 ## Release strategy
 

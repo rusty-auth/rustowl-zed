@@ -22,3 +22,13 @@ repository's MIT license.
 The adapter in this repository is an independently written client of
 RustOwl's documented `rustowl/cursor` and `rustowl/analyze` LSP methods. No
 RustOwl source code is incorporated into the adapter.
+
+## Research-only submodules
+
+The `references/` submodules are pinned upstream research projects used for
+architecture, semantics, UX, and interoperability studies. They are not linked
+into the extension, adapter, or RustOwl runtime and are excluded from release
+archives. Their source remains governed solely by each upstream project's
+license. Projects without clear license text are study-only and their source
+must not be copied or adapted. Exact revisions and license boundaries are
+recorded in [`references/README.md`](references/README.md).
