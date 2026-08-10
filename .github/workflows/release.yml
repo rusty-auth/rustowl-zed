@@ -18,21 +18,27 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar
+            engine_profile: release
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar
+            engine_profile: release
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar
+            engine_profile: release
           - os: macos-15
             target: aarch64-apple-darwin
             archive: tar
+            engine_profile: release
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            engine_profile: windows-release
           - os: windows-11-vs2026-arm
             target: aarch64-pc-windows-msvc
             archive: zip
+            engine_profile: windows-release
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +53,9 @@ jobs:
           --target ${{ matrix.target }}
       - name: Build compiler engine and MCP server
         working-directory: engine
-        run: cargo build --locked --release --bins
+        # rustc-private binaries cannot use fat LTO on Windows. RustOwl's
+        # windows-release profile inherits release while disabling LTO.
+        run: cargo build --locked --profile ${{ matrix.engine_profile }} --bins
       - name: Generate CycloneDX software bill of materials
         shell: bash
         run: |
@@ -58,9 +66,9 @@ jobs:
         shell: bash
         run: |
           cp "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter" staging/
-          cp engine/target/release/rustowl staging/
-          cp engine/target/release/rustowlc staging/
-          cp engine/target/release/rustowl-mcp staging/
+          cp engine/target/${{ matrix.engine_profile }}/rustowl staging/
+          cp engine/target/${{ matrix.engine_profile }}/rustowlc staging/
+          cp engine/target/${{ matrix.engine_profile }}/rustowl-mcp staging/
           cp LICENSE staging/LICENSE-MIT
           cp engine/LICENSE staging/LICENSE-MPL-2.0
           cp references/helix-db/LICENSE staging/LICENSE-APACHE-2.0
@@ -74,9 +82,9 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter.exe" staging/
-          Copy-Item engine/target/release/rustowl.exe staging/
-          Copy-Item engine/target/release/rustowlc.exe staging/
-          Copy-Item engine/target/release/rustowl-mcp.exe staging/
+          Copy-Item engine/target/${{ matrix.engine_profile }}/rustowl.exe staging/
+          Copy-Item engine/target/${{ matrix.engine_profile }}/rustowlc.exe staging/
+          Copy-Item engine/target/${{ matrix.engine_profile }}/rustowl-mcp.exe staging/
           Copy-Item LICENSE staging/LICENSE-MIT
           Copy-Item engine/LICENSE staging/LICENSE-MPL-2.0
           Copy-Item references/helix-db/LICENSE staging/LICENSE-APACHE-2.0
