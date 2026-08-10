@@ -25,6 +25,34 @@ The client is under active development ahead of its first Zed Extension
 Marketplace submission. The adapter and extension build in CI; hands-on Zed
 testing and upstream feedback are the remaining gates before submission.
 
+## What it looks like
+
+Design previews of the native semantic underlines, inline hints, and hover
+explanations. Exact colours inherit your Zed theme and semantic-token settings.
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Immutable borrowing</strong><br>
+      <a href="assets/showcase/borrow.webp"><img src="assets/showcase/borrow.webp" alt="Zed preview showing an immutable Rust borrow with a blue underline and inline helper"></a>
+    </td>
+    <td width="50%">
+      <strong>Ownership moves</strong><br>
+      <a href="assets/showcase/move.webp"><img src="assets/showcase/move.webp" alt="Zed preview showing ownership moving into a function call and a later invalid use"></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Conflicting borrows</strong><br>
+      <a href="assets/showcase/conflict.webp"><img src="assets/showcase/conflict.webp" alt="Zed preview showing overlapping mutable and shared borrows"></a>
+    </td>
+    <td width="50%">
+      <strong>Lifetime relationships</strong><br>
+      <a href="assets/showcase/lifetime.webp"><img src="assets/showcase/lifetime.webp" alt="Zed preview tracing a named Rust lifetime through a function signature"></a>
+    </td>
+  </tr>
+</table>
+
 ## Install
 
 Once the extension is published, open Zed's Extensions view and search for
