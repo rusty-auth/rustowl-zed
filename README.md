@@ -27,31 +27,24 @@ testing and upstream feedback are the remaining gates before submission.
 
 ## What it looks like
 
-Design previews of the native semantic underlines, inline hints, and hover
-explanations. Exact colours inherit your Zed theme and semantic-token settings.
+Faithful previews of the current adapter output: Zed's native LSP hover popover,
+semantic-token underlines, and inlay hints. Exact colours follow your Zed theme.
 
-<table>
-  <tr>
-    <td width="50%">
-      <strong>Immutable borrowing</strong><br>
-      <a href="assets/showcase/borrow.webp"><img src="assets/showcase/borrow.webp" alt="Zed preview showing an immutable Rust borrow with a blue underline and inline helper"></a>
-    </td>
-    <td width="50%">
-      <strong>Ownership moves</strong><br>
-      <a href="assets/showcase/move.webp"><img src="assets/showcase/move.webp" alt="Zed preview showing ownership moving into a function call and a later invalid use"></a>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <strong>Conflicting borrows</strong><br>
-      <a href="assets/showcase/conflict.webp"><img src="assets/showcase/conflict.webp" alt="Zed preview showing overlapping mutable and shared borrows"></a>
-    </td>
-    <td width="50%">
-      <strong>Lifetime relationships</strong><br>
-      <a href="assets/showcase/lifetime.webp"><img src="assets/showcase/lifetime.webp" alt="Zed preview tracing a named Rust lifetime through a function signature"></a>
-    </td>
-  </tr>
-</table>
+**Immutable borrowing**
+
+<a href="assets/showcase/borrow.webp"><img src="assets/showcase/borrow.webp" width="100%" alt="Zed editor showing an immutable Rust borrow with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+
+**Ownership moves**
+
+<a href="assets/showcase/move.webp"><img src="assets/showcase/move.webp" width="100%" alt="Zed editor showing Rust ownership moving into a function call with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+
+**Conflicting borrows**
+
+<a href="assets/showcase/conflict.webp"><img src="assets/showcase/conflict.webp" width="100%" alt="Zed editor showing overlapping mutable and immutable Rust borrows with RustOwl semantic underlines, inlay hints, and a native hover popover"></a>
+
+**Lifetime relationships**
+
+<a href="assets/showcase/lifetime.webp"><img src="assets/showcase/lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with RustOwl semantic underlines and a native hover popover"></a>
 
 ## Install
 

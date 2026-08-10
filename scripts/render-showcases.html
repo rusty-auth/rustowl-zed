@@ -3,30 +3,29 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>RustOwl for Zed showcase</title>
+    <title>RustOwl native Zed hover preview</title>
     <style>
       :root {
         color-scheme: dark;
-        --ink: #e8edf7;
-        --muted: #7d899c;
-        --chrome: #121720;
-        --panel: #171d27;
-        --editor: #10151d;
-        --line: #252e3d;
+        --editor: #111317;
+        --editor-line: #161a21;
+        --foreground: #d8dce5;
+        --muted: #626875;
+        --popover: #25262b;
+        --popover-border: #3b3d45;
         --green: #52d65b;
         --blue: #647cf3;
         --purple: #d65bd1;
         --orange: #d69852;
-        --red: #e05f65;
-        --brand: #cc5a19;
+        --red: #d65252;
       }
 
       * { box-sizing: border-box; }
 
       html,
       body {
-        width: 1600px;
-        height: 1000px;
+        width: 1400px;
+        height: 600px;
         margin: 0;
         overflow: hidden;
       }
@@ -34,235 +33,51 @@
       body {
         display: grid;
         place-items: center;
-        background:
-          radial-gradient(circle at 16% 0%, rgba(204, 90, 25, 0.22), transparent 34%),
-          radial-gradient(circle at 88% 100%, rgba(100, 124, 243, 0.16), transparent 38%),
-          #090d13;
-        color: var(--ink);
-        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0b0d10;
       }
-
-      .window {
-        width: 1500px;
-        height: 920px;
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.11);
-        border-radius: 20px;
-        background: var(--chrome);
-        box-shadow: 0 36px 100px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(0, 0, 0, 0.7);
-      }
-
-      .titlebar {
-        height: 52px;
-        display: grid;
-        grid-template-columns: 170px 1fr 170px;
-        align-items: center;
-        border-bottom: 1px solid #242c38;
-        background: linear-gradient(#1a202a, #151b24);
-        padding: 0 18px;
-      }
-
-      .traffic { display: flex; gap: 10px; }
-      .traffic i { width: 13px; height: 13px; border-radius: 50%; display: block; }
-      .traffic i:nth-child(1) { background: #ff5f57; }
-      .traffic i:nth-child(2) { background: #febc2e; }
-      .traffic i:nth-child(3) { background: #28c840; }
-
-      .window-title {
-        text-align: center;
-        color: #abb5c5;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.01em;
-      }
-
-      .mode {
-        justify-self: end;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        color: #9ca8ba;
-        font-size: 12px;
-      }
-
-      .mode-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 12px rgba(82, 214, 91, 0.75);
-      }
-
-      .workspace {
-        height: 832px;
-        display: grid;
-        grid-template-columns: 250px 1fr;
-      }
-
-      .sidebar {
-        border-right: 1px solid #242c38;
-        background: #151a23;
-        padding: 20px 14px;
-      }
-
-      .sidebar-label {
-        display: flex;
-        justify-content: space-between;
-        margin: 0 8px 18px;
-        color: #778398;
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.13em;
-      }
-
-      .tree-row {
-        height: 34px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        border-radius: 7px;
-        padding: 0 10px;
-        color: #a9b3c2;
-        font-size: 13px;
-      }
-
-      .tree-row.indent { padding-left: 27px; }
-      .tree-row.deep { padding-left: 46px; }
-      .tree-row.active {
-        color: #f2f5fa;
-        background: #293140;
-        box-shadow: inset 2px 0 var(--brand);
-      }
-
-      .chevron { color: #667185; font-size: 10px; }
-      .folder { color: #d69852; }
-      .rust-icon { color: #e0783b; font-weight: 900; }
-
-      .sidebar-card {
-        margin: 30px 8px 0;
-        padding: 14px;
-        border: 1px solid #2d3747;
-        border-radius: 10px;
-        background: #11161e;
-      }
-
-      .sidebar-card-head {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        font-size: 12px;
-        font-weight: 750;
-      }
-
-      .sidebar-card img { width: 25px; height: 25px; }
-      .sidebar-card p { margin: 9px 0 0; color: #7f8b9d; font-size: 11px; line-height: 1.5; }
-
-      .editor-shell {
-        min-width: 0;
-        background: var(--editor);
-      }
-
-      .tabs {
-        height: 48px;
-        display: flex;
-        align-items: end;
-        border-bottom: 1px solid #242c38;
-        background: #151a23;
-      }
-
-      .tab {
-        height: 39px;
-        min-width: 186px;
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        padding: 0 18px;
-        border-right: 1px solid #242c38;
-        color: #d8deea;
-        background: var(--editor);
-        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-
-      .tab::before { content: "◆"; color: #e0783b; font-size: 10px; }
-      .tab-close { margin-left: auto; color: #677287; }
-
-      .breadcrumbs {
-        height: 38px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 0 22px;
-        border-bottom: 1px solid rgba(36, 44, 56, 0.7);
-        color: #657187;
-        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-
-      .crumb-current { color: #aeb8c8; }
 
       .editor {
-        height: 746px;
         position: relative;
+        width: 1360px;
+        height: 560px;
         overflow: hidden;
-        background:
-          linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px) 0 0 / 58px 58px,
-          var(--editor);
+        border: 1px solid #2a2d34;
+        border-radius: 10px;
+        background: var(--editor);
+        box-shadow: 0 20px 55px rgba(0, 0, 0, 0.42);
       }
 
-      .scene-heading {
+      .code {
         position: absolute;
-        left: 66px;
-        top: 38px;
+        left: 0;
+        top: var(--code-top);
+        width: 940px;
+        padding: 12px 0;
       }
 
-      .eyebrow {
-        margin-bottom: 8px;
-        color: var(--brand);
-        font-size: 11px;
-        font-weight: 850;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-      }
-
-      .scene-heading h1 {
-        margin: 0;
-        color: #f4f7fb;
-        font-size: 27px;
-        line-height: 1.15;
-        letter-spacing: -0.025em;
-      }
-
-      .scene-heading p {
-        margin: 8px 0 0;
-        color: #768297;
-        font-size: 13px;
-      }
-
-      .code-block {
-        position: absolute;
-        top: 144px;
-        left: 42px;
-        width: 785px;
-        padding: 22px 0 26px;
-        border: 1px solid #252e3c;
-        border-radius: 13px;
-        background: rgba(14, 19, 27, 0.92);
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
-      }
-
-      .line-row {
-        min-height: 42px;
+      .line {
+        min-height: 46px;
         display: grid;
-        grid-template-columns: 54px 1fr;
+        grid-template-columns: 66px 1fr;
         align-items: center;
-        padding-right: 22px;
-        font: 19px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        padding-right: 26px;
         white-space: pre;
+        font: 22px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
       }
 
-      .line-row.focus { background: rgba(100, 124, 243, 0.075); }
-      .ln { padding-right: 15px; color: #465166; font-size: 13px; text-align: right; user-select: none; }
-      .code { color: #d7deea; }
+      .line.focus {
+        background: var(--editor-line);
+      }
 
+      .number {
+        padding-right: 20px;
+        color: #555b67;
+        font-size: 14px;
+        text-align: right;
+        user-select: none;
+      }
+
+      .source { color: var(--foreground); }
       .kw { color: #c792ea; }
       .fn { color: #82aaff; }
       .type { color: #ffcb6b; }
@@ -271,233 +86,97 @@
       .num { color: #f78c6c; }
       .mut { color: #f78c6c; }
       .life { color: #a7e06f; font-style: italic; }
-      .comment { color: #5f6b7c; font-style: italic; }
 
       .u-green,
       .u-blue,
       .u-purple,
       .u-orange,
       .u-red {
-        border-radius: 3px;
-        padding-bottom: 3px;
+        padding-bottom: 2px;
         border-bottom: 3px solid;
       }
 
-      .u-green { border-color: var(--green); background: rgba(82, 214, 91, 0.07); }
-      .u-blue { border-color: var(--blue); background: rgba(100, 124, 243, 0.08); }
-      .u-purple { border-color: var(--purple); background: rgba(214, 91, 209, 0.08); }
-      .u-orange { border-color: var(--orange); background: rgba(214, 152, 82, 0.08); }
-      .u-red { border-color: var(--red); background: rgba(224, 95, 101, 0.08); }
+      .u-green { border-color: var(--green); }
+      .u-blue { border-color: var(--blue); }
+      .u-purple { border-color: var(--purple); }
+      .u-orange { border-color: var(--orange); }
+      .u-red { border-color: var(--red); }
 
       .hint {
-        display: inline-block;
-        margin-left: 16px;
-        padding: 2px 8px;
-        border-radius: 6px;
-        color: #8d98aa;
-        background: #202836;
-        font-size: 13px;
+        margin-left: 15px;
+        color: #777e8d;
+        font-size: 15px;
         font-style: italic;
-        line-height: 1.6;
-        vertical-align: 2px;
+        vertical-align: 1px;
       }
 
-      .hint.blue { color: #98a8ff; }
-      .hint.purple { color: #e79ae4; }
-      .hint.orange { color: #e8b77d; }
-      .hint.red { color: #f09599; }
-
-      .hover-card {
+      .popover {
         position: absolute;
-        top: 118px;
-        right: 40px;
-        width: 374px;
-        overflow: hidden;
-        border: 1px solid #354155;
-        border-radius: 14px;
-        background: rgba(25, 32, 43, 0.98);
-        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.54), 0 0 0 1px rgba(0,0,0,.45);
+        z-index: 2;
+        top: var(--popover-top);
+        right: 34px;
+        width: 376px;
+        padding: 12px;
+        border: 1px solid var(--popover-border);
+        border-radius: 8px;
+        background: var(--popover);
+        color: #d7d9df;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.44);
+        font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      .hover-head {
-        display: flex;
-        align-items: center;
-        gap: 11px;
-        padding: 15px 17px;
-        border-bottom: 1px solid #313b4c;
-        background: #1c2330;
+      .popover p {
+        margin: 0 0 10px;
       }
 
-      .hover-head img { width: 30px; height: 30px; }
-      .hover-brand { font-size: 14px; font-weight: 800; }
-      .hover-status { margin-left: auto; color: #85d98c; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-
-      .hover-body { padding: 18px; }
-      .selection { color: #8793a6; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
-      .state { margin: 8px 0 7px; color: #f0f3f8; font-size: 21px; font-weight: 760; letter-spacing: -0.02em; }
-      .explanation { margin: 0; color: #a3adbc; font-size: 13px; line-height: 1.58; }
-
-      .timeline {
-        display: grid;
-        gap: 10px;
-        margin-top: 17px;
-        padding-top: 15px;
-        border-top: 1px solid #313b4c;
+      .popover p:last-child {
+        margin-bottom: 0;
       }
 
-      .event { display: grid; grid-template-columns: 9px 1fr auto; gap: 10px; align-items: center; color: #aeb7c5; font-size: 12px; }
-      .event i { width: 8px; height: 8px; border-radius: 50%; background: var(--event); box-shadow: 0 0 10px color-mix(in srgb, var(--event), transparent 45%); }
-      .event span:last-child { color: #68758a; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
-
-      .diagnostic {
-        position: absolute;
-        left: 42px;
-        bottom: 34px;
-        width: 785px;
-        display: flex;
-        gap: 12px;
-        align-items: flex-start;
-        padding: 13px 16px;
-        border: 1px solid rgba(224, 95, 101, 0.33);
-        border-radius: 10px;
-        background: rgba(75, 30, 36, 0.38);
-        color: #d7dce5;
-        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      .popover strong {
+        color: #f1f2f4;
+        font-weight: 700;
       }
 
-      .diagnostic strong { color: #f09599; }
-      .diagnostic-icon { color: var(--red); font-size: 14px; }
-
-      .legend {
-        position: absolute;
-        right: 46px;
-        bottom: 38px;
-        display: flex;
-        gap: 13px;
-        color: #657187;
-        font-size: 10px;
+      .popover code {
+        padding: 2px 5px;
+        border-radius: 4px;
+        background: #17191e;
+        color: #d8dbe2;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
       }
-
-      .legend span { display: flex; align-items: center; gap: 5px; }
-      .legend i { width: 13px; height: 3px; border-radius: 2px; background: var(--legend); }
-
-      .statusbar {
-        height: 36px;
-        display: flex;
-        align-items: center;
-        gap: 18px;
-        padding: 0 16px;
-        border-top: 1px solid #242c38;
-        background: #151a23;
-        color: #778397;
-        font-size: 11px;
-      }
-
-      .status-spacer { flex: 1; }
-      .status-rustowl { display: flex; align-items: center; gap: 7px; color: #c6cfdd; }
-      .status-rustowl img { width: 18px; height: 18px; }
-      .status-check { color: var(--green); }
     </style>
   </head>
   <body>
-    <main class="window">
-      <header class="titlebar">
-        <div class="traffic"><i></i><i></i><i></i></div>
-        <div class="window-title">rustowl-examples — Zed</div>
-        <div class="mode"><span class="mode-dot"></span> RustOwl active</div>
-      </header>
-      <div class="workspace">
-        <aside class="sidebar">
-          <div class="sidebar-label"><span>PROJECT</span><span>•••</span></div>
-          <div class="tree-row"><span class="chevron">▼</span><span class="folder">▰</span><strong>rustowl-examples</strong></div>
-          <div class="tree-row indent"><span class="chevron">▼</span><span class="folder">▰</span>src</div>
-          <div class="tree-row deep file-row" data-file="borrow.rs"><span class="rust-icon">◆</span>borrow.rs</div>
-          <div class="tree-row deep file-row" data-file="move.rs"><span class="rust-icon">◆</span>move.rs</div>
-          <div class="tree-row deep file-row" data-file="conflict.rs"><span class="rust-icon">◆</span>conflict.rs</div>
-          <div class="tree-row deep file-row" data-file="lifetime.rs"><span class="rust-icon">◆</span>lifetime.rs</div>
-          <div class="tree-row indent"><span class="rust-icon">◇</span>Cargo.toml</div>
-          <div class="sidebar-card">
-            <div class="sidebar-card-head"><img src="../assets/rustyauth-mark.svg" alt=""><span>RustOwl for Zed</span></div>
-            <p>Ownership made visible through native semantic underlines and inline hints.</p>
-          </div>
-        </aside>
-        <section class="editor-shell">
-          <div class="tabs"><div class="tab"><span id="tab-file">borrow.rs</span><span class="tab-close">×</span></div></div>
-          <div class="breadcrumbs"><span>rustowl-examples</span><span>›</span><span>src</span><span>›</span><span id="crumb-file" class="crumb-current">borrow.rs</span></div>
-          <div class="editor">
-            <div class="scene-heading">
-              <div class="eyebrow">RustOwl ownership visualisation</div>
-              <h1 id="scene-title"></h1>
-              <p id="scene-subtitle"></p>
-            </div>
-            <div id="code-block" class="code-block"></div>
-            <aside class="hover-card">
-              <div class="hover-head">
-                <img src="../assets/rustyauth-mark.svg" alt="">
-                <span class="hover-brand">RustOwl</span>
-                <span class="hover-status">analysis complete</span>
-              </div>
-              <div class="hover-body">
-                <div id="selection" class="selection"></div>
-                <div id="state" class="state"></div>
-                <p id="explanation" class="explanation"></p>
-                <div id="timeline" class="timeline"></div>
-              </div>
-            </aside>
-            <div id="diagnostic"></div>
-            <div class="legend">
-              <span><i style="--legend:var(--green)"></i>live</span>
-              <span><i style="--legend:var(--blue)"></i>shared</span>
-              <span><i style="--legend:var(--purple)"></i>mutable</span>
-              <span><i style="--legend:var(--orange)"></i>move</span>
-              <span><i style="--legend:var(--red)"></i>conflict</span>
-            </div>
-          </div>
-        </section>
-      </div>
-      <footer class="statusbar">
-        <span>main*</span><span>↻</span><span class="status-spacer"></span><span>Ln <b id="status-line">3</b>, Col 22</span><span>Spaces: 4</span><span>UTF-8</span><span>Rust</span><span>rust-analyzer ✓</span>
-        <span class="status-rustowl"><img src="../assets/rustyauth-mark.svg" alt=""><b>RustOwl</b><span class="status-check">✓</span></span>
-      </footer>
+    <main id="editor" class="editor">
+      <section id="code" class="code"></section>
+      <aside id="popover" class="popover">
+        <p><strong>RustOwl</strong></p>
+        <p id="hover-message"></p>
+        <p>Analysis status: <code>finished</code></p>
+      </aside>
     </main>
 
     <script>
       const scenes = {
         borrow: {
-          file: "borrow.rs",
-          title: "See an immutable borrow as it happens",
-          subtitle: "The source stays live while the shared reference is in use.",
+          codeTop: "142px",
+          popoverTop: "168px",
           focus: 3,
-          selection: "message · line 3",
-          state: "Immutably borrowed",
-          explanation: "message remains valid while borrowed holds a shared reference. Other readers are safe; mutation waits until the borrow ends.",
-          events: [
-            ["var(--green)", "message initialized", "line 2"],
-            ["var(--blue)", "shared reference created", "line 3"],
-            ["var(--green)", "last use keeps value live", "line 4"]
-          ],
+          hover: "immutable borrow",
           lines: [
             `<span class="kw">fn</span> <span class="fn">greet</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">message</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"hello, Rust"</span>);`,
-            `    <span class="kw">let</span> borrowed = <span class="u-blue">&amp;message</span>;<span class="hint blue">← immutable borrow</span>`,
+            `    <span class="kw">let</span> borrowed = <span class="u-blue">&amp;message</span>;<span class="hint">← immutable borrow</span>`,
             `    <span class="macro">println!</span>(<span class="str">"{borrowed}"</span>);`,
             `}`
           ]
         },
         move: {
-          file: "move.rs",
-          title: "Catch ownership moving across a call",
-          subtitle: "The transfer is marked at the call site—and the invalid reuse is impossible to miss.",
+          codeTop: "58px",
+          popoverTop: "242px",
           focus: 7,
-          selection: "payload · line 7",
-          state: "Ownership transferred",
-          explanation: "send takes payload by value. The orange range marks the move; payload cannot be read again in this scope.",
-          diagnostic: `<strong>borrow of moved value:</strong> payload · value borrowed here after move`,
-          events: [
-            ["var(--green)", "payload initialized", "line 6"],
-            ["var(--orange)", "ownership moved into send", "line 7"],
-            ["var(--red)", "use after move", "line 8"]
-          ],
+          hover: "variable moved",
           lines: [
             `<span class="kw">fn</span> <span class="fn">send</span>(payload: <span class="type">String</span>) {`,
             `    <span class="fn">drop</span>(payload);`,
@@ -505,47 +184,30 @@
             ``,
             `<span class="kw">fn</span> <span class="fn">main</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">payload</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"signed token"</span>);`,
-            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint orange">← moved</span>`,
+            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint">← moved</span>`,
             `    <span class="macro">println!</span>(<span class="str">"{</span><span class="u-red">payload</span><span class="str">}"</span>);`,
             `}`
           ]
         },
         conflict: {
-          file: "conflict.rs",
-          title: "Understand conflicting borrows instantly",
-          subtitle: "Mutable and shared access are traced together, directly on the expressions that overlap.",
+          codeTop: "118px",
+          popoverTop: "210px",
           focus: 4,
-          selection: "scores · line 4",
-          state: "Conflicting borrows",
-          explanation: "first keeps exclusive access to scores alive. Creating second overlaps that mutable borrow with shared access.",
-          diagnostic: `<strong>cannot borrow scores as immutable</strong> because it is also borrowed as mutable`,
-          events: [
-            ["var(--green)", "scores initialized", "line 2"],
-            ["var(--purple)", "exclusive borrow begins", "line 3"],
-            ["var(--red)", "shared borrow overlaps", "line 4"]
-          ],
+          hover: "immutable and mutable borrows of scores exist here",
           lines: [
             `<span class="kw">fn</span> <span class="fn">adjust</span>() {`,
             `    <span class="kw">let</span> <span class="mut">mut</span> scores = <span class="macro">vec!</span>[<span class="num">10</span>, <span class="num">20</span>, <span class="num">30</span>];`,
-            `    <span class="kw">let</span> first = <span class="u-purple">&amp;mut scores[0]</span>;<span class="hint purple">← mutable borrow</span>`,
-            `    <span class="kw">let</span> second = <span class="u-red">&amp;scores[1]</span>;<span class="hint red">← conflicting borrows</span>`,
+            `    <span class="kw">let</span> first = <span class="u-purple">&amp;mut scores[0]</span>;<span class="hint">← mutable borrow</span>`,
+            `    <span class="kw">let</span> second = <span class="u-red">&amp;scores[1]</span>;<span class="hint">← conflicting borrows</span>`,
             `    *first += *second;`,
             `}`
           ]
         },
         lifetime: {
-          file: "lifetime.rs",
-          title: "Follow a lifetime through the whole function",
-          subtitle: "Related inputs and the returned reference share one visible lifetime contract.",
-          focus: 4,
-          selection: "'a · function signature",
-          state: "Shared return lifetime",
-          explanation: "Both inputs are valid for 'a, and the returned reference is bounded by that same lifetime chosen by the caller.",
-          events: [
-            ["var(--green)", "left valid for 'a", "line 2"],
-            ["var(--green)", "right valid for 'a", "line 3"],
-            ["var(--green)", "return constrained by 'a", "line 4"]
-          ],
+          codeTop: "36px",
+          popoverTop: "210px",
+          focus: 6,
+          hover: "left definitely lives here",
           lines: [
             `<span class="kw">fn</span> <span class="fn">longest</span>&lt;<span class="u-green life">'a</span>&gt;(`,
             `    left: &amp;<span class="u-green life">'a</span> <span class="type">str</span>,`,
@@ -563,29 +225,13 @@
 
       const key = new URLSearchParams(location.search).get("scene") || "borrow";
       const scene = scenes[key] || scenes.borrow;
-      document.title = `${scene.title} — RustOwl for Zed`;
-      document.getElementById("tab-file").textContent = scene.file;
-      document.getElementById("crumb-file").textContent = scene.file;
-      document.getElementById("scene-title").textContent = scene.title;
-      document.getElementById("scene-subtitle").textContent = scene.subtitle;
-      document.getElementById("selection").textContent = scene.selection;
-      document.getElementById("state").textContent = scene.state;
-      document.getElementById("explanation").textContent = scene.explanation;
-      document.getElementById("status-line").textContent = scene.focus;
-      document.querySelector(`[data-file="${scene.file}"]`).classList.add("active");
-
-      document.getElementById("code-block").innerHTML = scene.lines
-        .map((code, index) => `<div class="line-row ${index + 1 === scene.focus ? "focus" : ""}"><span class="ln">${index + 1}</span><span class="code">${code || "&nbsp;"}</span></div>`)
+      const editor = document.getElementById("editor");
+      editor.style.setProperty("--code-top", scene.codeTop);
+      editor.style.setProperty("--popover-top", scene.popoverTop);
+      document.getElementById("hover-message").textContent = scene.hover;
+      document.getElementById("code").innerHTML = scene.lines
+        .map((source, index) => `<div class="line ${index + 1 === scene.focus ? "focus" : ""}"><span class="number">${index + 1}</span><span class="source">${source || "&nbsp;"}</span></div>`)
         .join("");
-
-      document.getElementById("timeline").innerHTML = scene.events
-        .map(([color, label, where]) => `<div class="event" style="--event:${color}"><i></i><span>${label}</span><span>${where}</span></div>`)
-        .join("");
-
-      if (scene.diagnostic) {
-        document.getElementById("diagnostic").className = "diagnostic";
-        document.getElementById("diagnostic").innerHTML = `<span class="diagnostic-icon">●</span><span>${scene.diagnostic}</span>`;
-      }
     </script>
   </body>
 </html>
