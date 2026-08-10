@@ -508,6 +508,12 @@ Defaults are deliberately bounded: no more than 50 nodes, six call hops, and
 budget within configured limits. Source text is not returned unless necessary
 to identify a span.
 
+Runtime-aware responses additionally contain a run ID, executable build ID,
+static graph revision, capture policy, observed timestamp/sequence, and the
+evidence class `observed_in_run`. Observed evidence never changes the certainty
+of a static edge: one run can prove that a path executed in that run, but
+cannot prove that other statically possible paths are unreachable.
+
 ### Agent configuration and privacy
 
 - Installation registers the server, but users choose which Agent Profiles
@@ -519,6 +525,70 @@ to identify a span.
 - No graph data leaves the machine except through a user-initiated MCP tool
   response to the configured agent.
 - Logs omit source text by default and redact paths outside the workspace.
+
+### Optional runtime evidence tools
+
+Runtime tools are visible only when runtime capture is enabled for the active
+workspace:
+
+- `rustowl_list_runtime_runs` returns bounded run metadata, capture policy,
+  build/revision compatibility, retention, and health without returning values.
+- `rustowl_correlate_runtime_flow` joins a selected run's observed calls,
+  logical moves, mutations, returns, drops, tasks, and suspension events to a
+  bounded static ownership path.
+
+MCP tools never launch or instrument a program. Capture starts only through an
+explicit editor command or `rustowl run --capture`, so an agent cannot silently
+execute code, increase instrumentation, or collect values.
+
+## Runtime evidence and static correlation
+
+Runtime evidence is a separate opt-in graph namespace stored alongside, but
+never merged into, the immutable static ownership graph. Rust borrows and many
+moves do not exist as inspectable runtime objects after compilation; therefore
+ordinary logs, a debugger, or HelixDB alone cannot reconstruct the ownership
+model. The runtime lane correlates compiler-assigned static graph IDs with
+instrumented logical program events.
+
+Each capture produces an immutable `RuntimeRun` containing:
+
+- executable build ID, toolchain, features, target, and source fingerprint;
+- compatible static analysis revision and graph schema;
+- process, thread, async task, tracing span, and monotonic event sequence;
+- observed calls, logical moves/copies, borrows, mutations, returns, drops,
+  task spawn/join, suspension, resume, cancellation, panic, and unwind events;
+- capture policy, redaction policy, truncation, sampling, and dropped-event
+  counts; and
+- explicit start/end/crash state and retention deadline.
+
+Runtime nodes and edges use names such as `Run`, `Task`, `RuntimeEvent`,
+`ValueSnapshot`, `OBSERVED_NEXT`, `OBSERVED_CALL`, `OBSERVED_MUTATION`,
+`OBSERVED_RETURN`, `OBSERVED_SUSPEND`, and `CORRELATES_WITH_STATIC`. A logical
+move event means “the instrumented MIR ownership operation executed”; it does
+not claim that machine code physically copied bytes.
+
+Capture has four escalating policies:
+
+1. **control only** — graph IDs, event classes, task/thread IDs, and timing;
+2. **metadata** — type identity, size, discriminant where safely available,
+   collection length, and a keyed value hash;
+3. **approved values** — user-selected types/fields implementing an explicit
+   safe capture trait, with redaction and byte limits; and
+4. **experimental taint** — separately enabled propagation for targeted data
+   flow questions, never a marketplace default.
+
+Arbitrary memory, raw pointers, reference targets, credentials, environment
+variables, files, network payloads, and `Debug` output are not captured by
+default. Capture code must not retain references, invoke surprising user code,
+change drop order, or panic across the instrumentation boundary. Secret and
+PII deny rules run before persistence. All runs are local, encrypted at rest
+when value capture is enabled, size/age bounded, individually deletable, and
+excluded from diagnostic bundles unless the user explicitly includes them.
+
+The first implementation uses compiler/MIR instrumentation and `tracing`
+correlation rather than debugger scraping. Debugger, eBPF, sanitizer, and
+OpenTelemetry importers may become adapters later, but their evidence source
+must remain explicit.
 
 ## Performance objectives
 
@@ -532,8 +602,13 @@ analysis has completed:
 - in-memory graph activation: under 100 ms for 100,000 events;
 - persisted revision activation: under 1 second for 100,000 events;
 - MCP cold start to first read: under 500 ms excluding OS disk cold-cache;
-- zero stale revision mix-ups across document versions; and
-- bounded index growth with configurable revision retention.
+- zero stale revision mix-ups across document versions;
+- bounded index growth with configurable revision retention;
+- zero runtime overhead when capture is disabled;
+- control-only capture overhead measured against an uninstrumented build with
+  a release target below 5% on the benchmark corpus; and
+- bounded value-capture memory, disk, and event-queue usage under configured
+  backpressure.
 
 These are release gates, not assumptions. Benchmarks record CPU, wall time,
 peak memory, database size, write amplification, and shutdown flush time.
@@ -554,6 +629,12 @@ must be justified by these measurements rather than a fixed marketing claim.
 - All query inputs have depth, size, time, and path-boundary limits.
 - MCP tools cannot read arbitrary filesystem paths.
 - Mermaid labels are escaped to prevent directive or link injection.
+- runtime capture is off by default, requires explicit per-run consent, and
+  cannot be started through MCP;
+- static and observed evidence live in different schema namespaces and every
+  correlation validates build/source/revision compatibility;
+- value capture has allow/deny rules, redaction, encryption, retention, and
+  deletion tests;
 - Release archives contain licenses, notices, checksums, and an SBOM.
 - CI pins third-party Git revisions and rejects lockfile drift.
 - Release artifacts are built on all target platforms and smoke-tested before
@@ -677,7 +758,32 @@ Exit criteria:
 - an external ACP agent can use the forwarded server where supported;
 - no tool can escape the active project roots or return unbounded output.
 
-### M6 — unified runtime and supply chain
+### M6 — opt-in runtime evidence
+
+Deliverables:
+
+- runtime evidence schema and static-correlation contract;
+- compiler/MIR event IDs and control-only instrumentation;
+- `rustowl run --capture` with explicit policies and local run lifecycle;
+- Helix run storage isolated from static revisions;
+- tracing/thread/async-task correlation and cancellation/panic handling;
+- optional approved-value capture trait, redaction, encryption, retention, and
+  deletion controls; and
+- two bounded read-only runtime MCP tools.
+
+Exit criteria:
+
+- a captured six-function run correlates observed events to the exact static
+  graph IDs and source spans without relabeling possible paths as executed;
+- async task suspension, resume, cancellation, and cross-thread movement are
+  distinguishable in a real Tokio fixture;
+- disabled capture has zero runtime instrumentation behavior;
+- overhead, backpressure, crash recovery, redaction, secrets, retention, and
+  deletion gates pass;
+- agents cannot start capture or retrieve values outside the selected run and
+  capture policy.
+
+### M7 — unified runtime and supply chain
 
 Deliverables:
 
@@ -695,7 +801,7 @@ Exit criteria:
 - upgrade preserves or safely rebuilds compatible workspace indexes;
 - all six platform artifacts pass installation and basic graph/MCP smoke tests.
 
-### M7 — beta hardening
+### M8 — beta hardening
 
 Deliverables:
 
@@ -712,7 +818,7 @@ Exit criteria:
 - graph fallback works under all injected Helix failures;
 - documented limits and recovery behavior match observed behavior.
 
-### M8 — marketplace GA
+### M9 — marketplace GA
 
 Deliverables:
 
@@ -726,7 +832,7 @@ Exit criteria:
 
 - production SLOs pass on the release candidate;
 - clean installs and upgrades pass on every supported target;
-- Agent Panel, editor visuals, and offline fallback are verified end-to-end.
+- Agent Panel, editor visuals, and offline fallback are verified end-to-end;
 - all UI and MCP golden tests enforce the shared certainty/freshness language
   and reject claims about executed branches or runtime values.
 
@@ -750,15 +856,18 @@ flowchart LR
     M2 --> M4["M4 Zed cockpit"]
     M3 --> M5["M5 MCP agents"]
     M2 --> M5
-    M4 --> M6["M6 Unified runtime"]
-    M5 --> M6
-    M6 --> M7["M7 Beta hardening"]
-    M7 --> M8["M8 Marketplace GA"]
+    M5 --> M6["M6 Runtime evidence"]
+    M4 --> M7["M7 Unified runtime"]
+    M5 --> M7
+    M6 --> M7
+    M7 --> M8["M8 Beta hardening"]
+    M8 --> M9["M9 Marketplace GA"]
 ```
 
 Helix persistence and indexed LSP development can proceed after the graph
 contract stabilizes. Agent integration must not begin against an unstable
-graph schema, and unified packaging must contain actual tested engine and MCP
+graph schema. Runtime instrumentation follows the static/MCP truth contract,
+and unified packaging must contain actual tested engine, recorder, and MCP
 artifacts rather than placeholders.
 
 ## Immediate implementation queue
