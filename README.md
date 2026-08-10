@@ -31,9 +31,10 @@ extension, indexed compiler engine, embedded HelixDB store, and MCP server are
 implemented and have been exercised together in Zed Preview on macOS ARM64
 with rust-analyzer running alongside RustOwl.
 
-The release workflow builds one checksummed runtime for all six declared
-macOS, Linux, and Windows targets. Those matrix builds and clean-install visual
-checks must pass in CI before a tag is promoted or submitted to the Zed
+The release workflow builds and automatically verifies one checksummed runtime
+for all six declared macOS, Linux, and Windows targets. The six-platform package
+matrix and a clean-install macOS ARM64 LSP/MCP smoke pass; cross-platform visual
+checks and the tagged release remain gates before submission to the Zed
 Extension Marketplace. Optional runtime-value capture remains a deliberately
 separate future capability; this release exposes static compiler evidence and
 never claims to have observed program execution.
@@ -413,7 +414,7 @@ not claims about the current prototype.
 | **M5 — Agent Panel** | Implemented: six read-only MCP tools, three audience-aware prompts, context-server registration, bounded output, and protocol smoke tests. |
 | **M6 — Runtime evidence** | Future, opt-in lane; intentionally excluded from the static-analysis release. |
 | **M7 — Unified runtime** | Implemented in release automation: six target archives, compatibility manifest, checksums, licences, notices, upgrade, and rollback. |
-| **M8 — Beta hardening** | In progress: local macOS live-editor gates pass; the complete CI platform and clean-install matrix gates release promotion. |
+| **M8 — Beta hardening** | In progress: local macOS live-editor, full six-platform packaging, and packaged macOS ARM64 clean-install gates pass; cross-platform visual, stress, and performance gates remain. |
 | **M9 — Marketplace GA** | Pending the tagged runtime matrix and upstream Zed extensions-repository review. |
 
 Read the [complete roadmap](docs/ownership-cockpit-roadmap.md) for graph schema,

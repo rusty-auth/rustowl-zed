@@ -12,8 +12,16 @@ guide. Before opening the registry pull request:
 1. Merge a clean commit to this repository's public default branch.
 2. Run the Release workflow manually from that commit. This exercises the full
    six-platform build and packaging matrix but deliberately skips publication.
-3. Inspect the six retained workflow artifacts, then tag the same version as
-   `extension.toml` (`v0.1.3` for this candidate).
+3. Download and verify the six retained workflow artifacts. The workflow runs
+   this verifier automatically, and it can be repeated locally:
+
+   ```sh
+   gh run download <run-id> --dir artifacts
+   node scripts/verify-release-artifacts.mjs artifacts
+   ```
+
+   Only then tag the same version as `extension.toml` (`v0.1.3` for this
+   candidate).
 4. Wait for the tagged release workflow to publish all six
    `rustowl-zed-runtime-<target>` archives.
 5. Verify each archive contains four binaries, the compatibility manifest,

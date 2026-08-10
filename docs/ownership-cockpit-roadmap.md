@@ -24,10 +24,12 @@ The product has four connected surfaces:
 M0–M5 are implemented in the `0.1.3` marketplace candidate: deterministic
 compiler graph extraction, indexed LSP methods, embedded Helix persistence,
 automatic Zed visuals, layered hover explanations, six read-only MCP tools,
-and three audience-aware agent prompts. M7 packaging is implemented in release
-automation. M8
-platform and clean-install gates remain mandatory before a tag is promoted;
-M9 remains the upstream marketplace submission.
+and three audience-aware agent prompts. M7 packaging is implemented and its
+six-platform archive matrix passes automated content, checksum, manifest, SBOM,
+and binary-format verification. M8 has passed the live macOS ARM64 editor and
+packaged LSP/MCP clean-install gates; cross-platform visual, stress, and
+performance gates remain mandatory before a tag is promoted. M9 remains the
+upstream marketplace submission.
 
 M6 is not part of the static-analysis release. Runtime capture remains a
 separate, explicitly opt-in design so observed values and paths can never be
