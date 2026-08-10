@@ -22,7 +22,7 @@ pub struct Position {
     pub character: u32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -207,6 +207,29 @@ pub fn identifier_positions(uri: &str, requested_range: Range) -> Vec<Position> 
         .unwrap_or_default()
 }
 
+pub fn document_range(uri: &str) -> Option<Range> {
+    let source = source_for_uri(uri)?;
+    let mut lines = source.split('\n');
+    let first = lines.next().unwrap_or_default();
+    let mut end = Position {
+        line: 0,
+        character: first.trim_end_matches('\r').encode_utf16().count() as u32,
+    };
+    for (line, value) in lines.enumerate() {
+        end = Position {
+            line: line as u32 + 1,
+            character: value.trim_end_matches('\r').encode_utf16().count() as u32,
+        };
+    }
+    Some(Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end,
+    })
+}
+
 fn identifier_positions_in_source(source: &str, requested_range: Range) -> Vec<Position> {
     let mut positions = Vec::new();
     for (line_number, line) in source.lines().enumerate() {
@@ -367,6 +390,11 @@ pub fn ownership_flow_markdown(uri: &str, decorations: &[Decoration]) -> Option<
                 "imm_borrow" => "shared borrow",
                 "mut_borrow" => "exclusive borrow",
                 "move" => "move / call",
+                "copy" => "copy / source retained",
+                "mutation" => "write / new state",
+                "drop" => "drop / resources released",
+                "return" => "return / leaves scope",
+                "async_suspend" => "await / suspend",
                 "outlive" => "must outlive",
                 "shared_mut" => "borrow conflict",
                 _ => return None,
@@ -431,6 +459,100 @@ pub fn range_for_lsp(uri: &str, range: Range) -> Range {
     }
 }
 
+/// Return a non-empty, document-valid UTF-16 range for a hover position.
+/// Zed may request hover at the logical end of a line; in that case inspect
+/// the preceding code point instead of sending an out-of-bounds range to the
+/// indexed graph API. Blank lines remain a valid empty range and yield no
+/// compiler evidence.
+pub fn inspect_range_at(uri: &str, position: Position) -> Range {
+    let Some(source) = source_for_uri(uri) else {
+        return Range {
+            start: position,
+            end: position,
+        };
+    };
+    let Some(line) = source.lines().nth(position.line as usize) else {
+        return Range {
+            start: position,
+            end: position,
+        };
+    };
+
+    let mut column = 0_u32;
+    let mut previous_start = None;
+    for character in line.trim_end_matches('\r').chars() {
+        let next = column.saturating_add(character.len_utf16() as u32);
+        if position.character < next {
+            return Range {
+                start: Position {
+                    line: position.line,
+                    character: column,
+                },
+                end: Position {
+                    line: position.line,
+                    character: next,
+                },
+            };
+        }
+        previous_start = Some(column);
+        column = next;
+    }
+
+    let start = previous_start.unwrap_or(column);
+    Range {
+        start: Position {
+            line: position.line,
+            character: start,
+        },
+        end: Position {
+            line: position.line,
+            character: column,
+        },
+    }
+}
+
+/// Translate RustOwl's file-wide Unicode-scalar offsets into LSP UTF-16
+/// positions. RustOwl deliberately ignores carriage returns while deriving
+/// compiler locations, so this mapper does the same for CRLF source files.
+pub fn range_from_scalar_span(source: &str, start: u32, end: u32) -> Option<Range> {
+    if start >= end {
+        return None;
+    }
+    let mut scalar_index = 0_u32;
+    let mut position = Position {
+        line: 0,
+        character: 0,
+    };
+    let mut start_position = None;
+    let mut end_position = None;
+    for character in source.chars().filter(|character| *character != '\r') {
+        if scalar_index == start {
+            start_position = Some(position);
+        }
+        if scalar_index == end {
+            end_position = Some(position);
+            break;
+        }
+        if character == '\n' {
+            position.line += 1;
+            position.character = 0;
+        } else {
+            position.character += character.len_utf16() as u32;
+        }
+        scalar_index += 1;
+    }
+    if scalar_index == start {
+        start_position = Some(position);
+    }
+    if scalar_index == end {
+        end_position = Some(position);
+    }
+    Some(Range {
+        start: start_position?,
+        end: end_position?,
+    })
+}
+
 pub fn contains(range: Range, position: Position) -> bool {
     range.start <= position && position < range.end
 }
@@ -440,9 +562,9 @@ fn token_type(kind: &str) -> Option<u32> {
         "lifetime" | "definitely_live" => Some(0),
         "maybe_initialized" => Some(1),
         "imm_borrow" => Some(2),
-        "mut_borrow" => Some(3),
-        "move" | "call" => Some(4),
-        "outlive" | "shared_mut" => Some(5),
+        "mut_borrow" | "mutation" => Some(3),
+        "move" | "copy" | "call" | "drop" | "return" => Some(4),
+        "outlive" | "shared_mut" | "async_suspend" => Some(5),
         _ => None,
     }
 }
@@ -561,6 +683,22 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
             inlay_label: Some("← move / call · check ownership"),
             priority: 80,
         }),
+        "copy" => Some(DecorationPresentation {
+            title: "Value copied",
+            summary: "Rust copies this value into the destination without consuming its source.",
+            facts: &[
+                (
+                    "Source",
+                    "the original place remains initialized and usable afterward",
+                ),
+                (
+                    "Type rule",
+                    "this path is available because the value implements `Copy`",
+                ),
+            ],
+            inlay_label: Some("← copy · source retained"),
+            priority: 70,
+        }),
         "outlive" => Some(DecorationPresentation {
             title: "Required lifetime",
             summary: "A later dependency requires this value to remain valid here.",
@@ -575,7 +713,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ),
             ],
             inlay_label: Some("← lifetime required · must stay live"),
-            priority: 105,
+            priority: 60,
         }),
         "shared_mut" => Some(DecorationPresentation {
             title: "Borrow conflict",
@@ -593,11 +731,112 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
             inlay_label: Some("← borrow conflict · shared + mutable"),
             priority: 110,
         }),
+        "mutation" => Some(DecorationPresentation {
+            title: "Value updated",
+            summary: "A compiler MIR assignment writes a new state into this place.",
+            facts: &[
+                ("Capability", "the destination requires write access"),
+                (
+                    "Flow",
+                    "incoming operands move, copy, or borrow into the new state",
+                ),
+            ],
+            inlay_label: Some("← write · value updated"),
+            priority: 85,
+        }),
+        "drop" => Some(DecorationPresentation {
+            title: "Value dropped",
+            summary: "The value is destroyed or its storage is cleaned up on this path.",
+            facts: &[
+                ("Afterward", "the place is unavailable until reinitialized"),
+                (
+                    "Resources",
+                    "the value's destructor releases owned resources",
+                ),
+            ],
+            inlay_label: Some("← drop · storage released"),
+            priority: 65,
+        }),
+        "return" => Some(DecorationPresentation {
+            title: "Value returned",
+            summary: "Ownership or a reference leaves the current function here.",
+            facts: &[
+                (
+                    "Contract",
+                    "the return type determines ownership and lifetime constraints",
+                ),
+                (
+                    "Caller",
+                    "the returned value becomes part of the caller's state",
+                ),
+            ],
+            inlay_label: Some("← return · ownership leaves scope"),
+            priority: 75,
+        }),
+        "async_suspend" => Some(DecorationPresentation {
+            title: "Async suspension",
+            summary: "The generated future can pause here while retaining compiler-live state.",
+            facts: &[
+                (
+                    "Future state",
+                    "live places are stored across the suspension",
+                ),
+                (
+                    "Cancellation",
+                    "dropping the future follows its cleanup path",
+                ),
+            ],
+            inlay_label: Some("← suspend · live state retained"),
+            priority: 120,
+        }),
+        "branch_join" => Some(DecorationPresentation {
+            title: "Control-flow join",
+            summary: "Ownership states from multiple predecessor paths meet here.",
+            facts: &[(
+                "Certainty",
+                "facts after the join must hold for the represented paths",
+            )],
+            inlay_label: None,
+            priority: 45,
+        }),
+        "loop_summary" => Some(DecorationPresentation {
+            title: "Loop-carried ownership",
+            summary: "This point summarizes state flowing around a loop back edge.",
+            facts: &[(
+                "Invariant",
+                "the next iteration receives the summarized ownership state",
+            )],
+            inlay_label: None,
+            priority: 45,
+        }),
+        "diagnostic" => Some(DecorationPresentation {
+            title: "Analysis boundary",
+            summary: "RustOwl cannot prove the complete ownership flow through this compiler construct yet.",
+            facts: &[
+                (
+                    "Certainty",
+                    "downstream conclusions are explicitly unresolved or conservative",
+                ),
+                (
+                    "Safety",
+                    "this is an analysis limitation, not a Rust compiler error",
+                ),
+            ],
+            inlay_label: None,
+            priority: 5,
+        }),
         _ => None,
     }
 }
 
 pub fn decoration_markdown(decoration: &Decoration) -> Option<String> {
+    if let Some(markdown) = decoration
+        .hover_text
+        .as_deref()
+        .filter(|text| text.starts_with("### RustOwl ·"))
+    {
+        return Some(markdown.to_owned());
+    }
     let presentation = decoration_presentation(&decoration.kind)?;
     let mut markdown = format!(
         "### RustOwl · {}\n\n{}\n\n",
@@ -691,8 +930,8 @@ fn utf16_to_char_column(line: &str, utf16_column: u32) -> u32 {
 mod tests {
     use super::{
         Decoration, Position, Range, async_hint, await_positions_in_source, decoration_markdown,
-        decoration_presentation, identifier_positions_in_source, inlay_hints,
-        ownership_flow_markdown, semantic_tokens,
+        decoration_presentation, identifier_positions_in_source, inlay_hints, inspect_range_at,
+        ownership_flow_markdown, range_from_scalar_span, semantic_tokens,
     };
 
     #[test]
@@ -1014,5 +1253,82 @@ mod tests {
             assert_eq!(presentation.title, title);
             assert_eq!(presentation.inlay_label, label);
         }
+    }
+
+    #[test]
+    fn maps_scalar_spans_to_utf16_while_ignoring_crlf_carriage_returns() {
+        assert_eq!(
+            range_from_scalar_span("🦉x\r\n", 0, 1),
+            Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 2,
+                },
+            })
+        );
+        assert_eq!(
+            range_from_scalar_span("🦉x\r\n", 1, 2),
+            Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 2,
+                },
+                end: Position {
+                    line: 0,
+                    character: 3,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn clamps_hover_inspection_to_a_real_utf16_code_point() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hover.rs");
+        std::fs::write(&path, "🦉x\r\n").unwrap();
+        let uri = url::Url::from_file_path(path).unwrap().to_string();
+
+        assert_eq!(
+            inspect_range_at(
+                &uri,
+                Position {
+                    line: 0,
+                    character: 1,
+                }
+            ),
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 2,
+                },
+            }
+        );
+        assert_eq!(
+            inspect_range_at(
+                &uri,
+                Position {
+                    line: 0,
+                    character: 99,
+                }
+            ),
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 2,
+                },
+                end: Position {
+                    line: 0,
+                    character: 3,
+                },
+            }
+        );
     }
 }

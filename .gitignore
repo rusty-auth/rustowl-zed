@@ -1,4 +1,5 @@
 target/
+extension.wasm
 adapter/tests/fixtures/**/Cargo.lock
 *.log
 .DS_Store

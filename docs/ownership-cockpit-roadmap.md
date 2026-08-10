@@ -19,6 +19,20 @@ The product has four connected surfaces:
 4. **Agent context** — bounded MCP tools and prompts available in Zed's Agent
    Panel.
 
+## Implementation snapshot — 2026-08-10
+
+M0–M5 are implemented in the `0.1.3` marketplace candidate: deterministic
+compiler graph extraction, indexed LSP methods, embedded Helix persistence,
+automatic Zed visuals, layered hover explanations, six read-only MCP tools,
+and three audience-aware agent prompts. M7 packaging is implemented in release
+automation. M8
+platform and clean-install gates remain mandatory before a tag is promoted;
+M9 remains the upstream marketplace submission.
+
+M6 is not part of the static-analysis release. Runtime capture remains a
+separate, explicitly opt-in design so observed values and paths can never be
+confused with compiler-proven possibilities.
+
 ## Product principles
 
 - Compiler-proven facts must be distinguishable from source-level inference.
@@ -28,6 +42,9 @@ The product has four connected surfaces:
 - All indexing is local by default. No source, graph, or telemetry is uploaded.
 - Agent tools return the smallest useful subgraph and always report freshness.
 - The engine emits structured data. Mermaid and Markdown are renderers.
+- Default explanations use source-level names and plain consequences; raw MIR
+  places, certainty, and revision provenance remain available in an advanced
+  compiler-evidence section.
 - Upstream RustOwl attribution, history, and MPL-2.0 requirements remain intact.
 
 ## Product truth and scope boundaries
@@ -102,18 +119,20 @@ rustowl-zed-runtime-<target>/
 ├── rustowl-zed-adapter[.exe]
 ├── rustowl[.exe]
 ├── rustowlc[.exe]
+├── rustowl-mcp[.exe]
 ├── LICENSE-MIT
 ├── LICENSE-MPL-2.0
 ├── LICENSE-APACHE-2.0
 ├── THIRD_PARTY_NOTICES.md
 ├── manifest.json
+├── sbom.cdx.json
 └── checksums.sha256
 ```
 
 HelixDB is linked into `rustowl`; users do not install Docker, start a daemon,
-create a cloud account, or configure a database URL. The same `rustowl` binary
-can run either `lsp` or `mcp` mode so engine, schema, and protocol versions
-cannot drift.
+create a cloud account, or configure a database URL. The `rustowl` LSP and
+`rustowl-mcp` server are built from the same engine revision and shipped in the
+same archive so graph schema and protocol versions cannot drift.
 
 The extension registers both capabilities:
 
@@ -122,12 +141,12 @@ The extension registers both capabilities:
 name = "RustOwl"
 languages = ["Rust"]
 
-[context_servers.rustowl]
+[context_servers.rustowl-ownership]
 ```
 
 `language_server_command` launches the adapter. `context_server_command`
-launches `rustowl mcp` from the same runtime directory and supplies the shared
-graph root.
+launches `rustowl-mcp` from the same runtime directory and resolves the project
+roots registered by the paired language servers.
 
 Release jobs build and smoke-test all currently supported targets:
 
@@ -147,20 +166,20 @@ enabled features, and schema major version:
 ```text
 <extension-work>/graph/
 └── <workspace-key>/
-    ├── active.json
-    ├── helix/
-    ├── locks/
-    ├── revisions/
-    └── recovery/
+    ├── ownership-a/
+    ├── ownership-b/
+    └── ownership.active-slot
 ```
 
 Paths stored in graph properties are workspace-relative whenever possible.
 Dependency source is indexed only when the user enables it. Build output,
 generated files, and source outside configured roots are excluded by default.
 
-`active.json` is a small recovery manifest containing schema version, active
-revision, source fingerprint, engine version, toolchain, completion time, and
-integrity counts. It is written atomically after the Helix revision validates.
+`ownership.active-slot` is a tiny atomic pointer to the last validated A/B
+generation. Each generation contains the revision contract plus native indexed
+nodes and typed edges. A changed analysis is built in the inactive generation,
+validated, and activated atomically; the other generation is bounded rollback.
+An unchanged engine/source fingerprint reuses the active revision.
 
 ## Revision model
 
@@ -334,13 +353,15 @@ trait OwnershipGraphStore {
 The production implementation uses HelixDB's embedded writer and read-only
 clients. The engine never connects to Helix Cloud automatically.
 
-The first production pin must reference an immutable HelixDB commit and record
-it in the software bill of materials. The current crates.io package exposes
-the query SDK but does not publish the embedded feature, so a moving Git branch
-is not acceptable. Before GA, choose one of:
+The production pin references immutable HelixDB commit
+`ce7392958f466d118328864d7e514e58ad01204f`, is mirrored in
+`references/helix-db`, and is recorded in the software bill of materials. The
+current crates.io package exposes the query SDK but does not publish the
+embedded feature, so the marketplace candidate uses the reviewed immutable Git
+revision rather than a moving branch. A future dependency update may move to:
 
 1. an official HelixDB release that publishes embedded support;
-2. an immutable Git revision tested in every release job; or
+2. a newer immutable Git revision tested in every release job; or
 3. a reviewed vendored snapshot with its Apache-2.0 notices and provenance.
 
 The storage trait and parity suite prevent this dependency decision from
@@ -415,9 +436,9 @@ All new methods are versioned and capability-negotiated. Existing
 
 ### Workspace cockpit
 
-Until Zed exposes custom extension panes, the engine generates a Markdown
-document that can be opened beside the source and rendered with Zed's Mermaid
-preview. Views include:
+Until Zed exposes custom extension panes, the engine and MCP server return
+bounded structured slices and Mermaid source that can be opened beside the
+source or rendered in an agent response. Supported views include:
 
 - selected value flow;
 - selected function memory/ownership state machine;
@@ -426,8 +447,7 @@ preview. Views include:
 - workspace ownership hotspots; and
 - borrow conflict explanation with relevant control-flow branches.
 
-The generated document is a cache artifact outside the user's tracked source
-tree unless the user explicitly exports it.
+No cockpit artifact is written into the user's tracked source tree.
 
 ## Zed Agent and MCP experience
 
@@ -435,7 +455,8 @@ Zed supports extension-provided MCP servers in the Agent Panel through
 `context_server_command`. The runtime exposes a local stdio server using the
 official Rust MCP SDK. Zed Agent uses it directly; external agents can receive
 configured MCP servers through ACP where supported. Terminal-based agents can
-launch the same `rustowl mcp` command from their own MCP configuration.
+launch the same `rustowl-mcp --workspace <cargo-root>` command from their own
+MCP configuration.
 
 Zed currently supports MCP tools and prompts, so the initial integration does
 not depend on resource discovery or subscriptions.
@@ -444,15 +465,15 @@ not depend on resource discovery or subscriptions.
 
 Keep the initial tool list focused so models select the correct tool:
 
-#### `rustowl_workspace_overview`
+#### `rustowl_workspace_summary`
 
-Summarizes indexed crates, modules, functions, active revision, stale files,
-ownership hotspots, borrow conflicts, async functions, and index health.
+Summarizes active workspace revisions, graph node/edge kinds, certainty counts,
+and index freshness.
 
-#### `rustowl_explain_location`
+#### `rustowl_inspect_range`
 
-Explains ownership, liveness, borrows, mutations, drops, await retention, and
-uncertainty at a workspace-relative file/line/column or graph ID.
+Returns bounded ownership, liveness, borrow, mutation, drop, async, and
+uncertainty evidence for one workspace-relative source range.
 
 #### `rustowl_trace_ownership`
 
@@ -460,34 +481,32 @@ Traverses a value forward or backward through calls, moves, borrows, returns,
 mutation, awaits, and drops. Inputs include depth, edge filters, confidence
 floor, and result budget.
 
-#### `rustowl_function_flow`
-
-Returns a structured function-level state machine with parameters, locals,
-calls, branches, returns, suspension points, and externally visible ownership
-effects.
-
-#### `rustowl_find_borrow_risks`
-
-Finds compiler-reported conflicts and high-value ownership situations within a
-file, function, crate, or workspace. It must distinguish errors from teaching
-opportunities and conservative warnings.
-
 #### `rustowl_render_mermaid`
 
 Renders a previously returned graph reference as bounded Mermaid source. The
 structured graph remains canonical; this tool exists for visual reasoning and
 chat responses.
 
+#### `rustowl_search`
+
+Searches binding, place, function, event, and diagnostic labels and returns
+stable IDs for follow-up tracing.
+
+#### `rustowl_async_state`
+
+Returns compiler-derived suspension points, retained future state, resume
+relationships, and cancellation/drop cleanup.
+
 All tools are read-only. Reanalysis remains an editor/save operation during
 the first release, avoiding surprising CPU-heavy tool calls from an agent.
 
 ### Prompts
 
-- `explain-rust-ownership` — explain a selected ownership path at the user's
-  chosen experience level.
-- `review-async-borrows` — inspect retained state, cancellation, `Send`, and
-  `'static` concerns before proposing changes.
-- `plan-ownership-refactor` — use graph facts to propose a refactor while
+- `debug-rust-ownership` — explain a selected ownership path at the requested
+  experience level.
+- `explain-rust-async-state` — inspect retained state, cancellation, and
+  suspension evidence before proposing changes.
+- `plan-rust-ownership-refactor` — use graph facts to plan a refactor while
   preserving behavior and identifying uncertain edges.
 
 ### Tool response contract
@@ -495,18 +514,16 @@ the first release, avoiding surprising CPU-heavy tool calls from an agent.
 Every tool response includes:
 
 - workspace key and active revision;
-- freshness (`current`, `stale`, `analysis_running`, or `unavailable`);
+- freshness of the latest committed compiler revision;
 - analyzed source/config fingerprint;
 - compiler and engine versions;
 - facts, graph IDs, and workspace-relative source spans;
 - certainty for every inferred relationship;
-- truncation, continuation cursor, and omitted counts; and
-- suggested next tool only when a deeper query is genuinely useful.
+- explicit truncation when a bounded graph slice reaches its limit.
 
-Defaults are deliberately bounded: no more than 50 nodes, six call hops, and
-12,000 response characters unless the caller explicitly requests a larger
-budget within configured limits. Source text is not returned unless necessary
-to identify a span.
+Defaults are deliberately bounded, with hard caps of 500 nodes, 12 traversal
+hops, and 100 search matches. Source text is not returned; tools identify
+source-backed spans and stable graph entities.
 
 Runtime-aware responses additionally contain a run ID, executable build ID,
 static graph revision, capture policy, observed timestamp/sequence, and the
@@ -739,9 +756,9 @@ Exit criteria:
 
 Deliverables:
 
-- `rustowl mcp` stdio server using the official Rust MCP SDK;
+- `rustowl-mcp` stdio server using the official Rust MCP SDK;
 - six read-only tools and three prompts;
-- Zed `context_servers.rustowl` registration;
+- Zed `context_servers.rustowl-ownership` registration;
 - shared read-only workspace index discovery;
 - response budgets, freshness, certainty, and path controls; and
 - MCP inspector plus Zed Agent Panel smoke tests.

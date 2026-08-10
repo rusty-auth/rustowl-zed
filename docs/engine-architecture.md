@@ -18,7 +18,7 @@ agent tooling. It remains an MPL-2.0 project derived from
 - Every result carries a document version and a certainty level so clients do
   not display stale or inferred information as compiler-proven fact.
 
-The first protocol additions should be:
+The indexed protocol exposes:
 
 - `rustowl/inspectRange` — all ownership events for a visible source range in
   one request;
@@ -40,29 +40,30 @@ format.
 
 ## HelixDB
 
-[HelixDB](https://github.com/HelixDB/helix-db) is a strong candidate for the
-persisted workspace graph because it provides a labeled property graph,
-traversals, typed properties, and an embedded Rust execution mode. It is
-Apache-2.0 licensed.
+[HelixDB](https://github.com/HelixDB/helix-db) is the embedded persisted
+workspace graph. It provides a labeled property graph, traversals, typed
+properties, and an embedded Rust execution mode and is pinned immutably under
+Apache-2.0.
 
 HelixDB should sit behind an engine-owned storage trait instead of becoming a
 hard dependency of the ownership analysis pipeline:
 
 ```rust
-trait OwnershipGraphStore {
-    async fn replace_function(&self, graph: FunctionGraph) -> Result<()>;
-    async fn flow_from(&self, node: NodeId, limits: FlowLimits) -> Result<OwnershipFlow>;
-    async fn invalidate_revision(&self, revision: Revision) -> Result<()>;
+trait GraphStore {
+    async fn stage(&self, graph: WorkspaceGraph) -> Result<StageReceipt>;
+    async fn activate(&self, workspace: &str, revision: &StableId) -> Result<ActivationReceipt>;
+    async fn load_active(&self, workspace: &str) -> Result<Option<WorkspaceGraph>>;
 }
 ```
 
-The initial implementation should be an in-memory adjacency graph used by
-hover and inline requests. An optional embedded HelixDB implementation can
-persist cross-file and historical graphs for side-pane exploration and MCP
-queries. This keeps the hot editor path independent from database startup,
-durability, or object-storage work.
+The in-memory adjacency graph serves hover and inline requests. Helix persists
+native indexed nodes/edges plus the canonical revision snapshot in two bounded
+A/B generations for cross-file exploration and read-only MCP queries. The new
+generation is validated before an atomic slot-pointer switch; the other is the
+rollback generation. This keeps the hot editor path independent from database
+startup and durability work.
 
-Before adopting HelixDB in release binaries, benchmark both implementations
-on cold startup, single-function replacement, six-hop traversal, full-crate
-replacement, database size, and shutdown flush time. The editor experience
-must continue working when persistence is disabled or unavailable.
+The parity, rotation, reader, regression, and recovery tests enforce that the
+editor experience remains available when persistence is disabled or
+unavailable. Benchmarks track cold startup, six-hop traversal, full revision
+replacement, database size, and shutdown behavior.

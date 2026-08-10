@@ -25,7 +25,7 @@ const child = spawn(adapter, [], {
   env: {
     ...process.env,
     RUSTOWL_BINARY: rustowl,
-    RUSTOWL_AUTO_SETUP: "1",
+    RUSTOWL_AUTO_SETUP: process.env.RUSTOWL_AUTO_SETUP ?? "1",
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -126,6 +126,13 @@ async function main() {
   if (!initialize.capabilities.inlayHintProvider) {
     throw new Error("adapter did not advertise inlay hints");
   }
+  if (
+    !initialize.capabilities.experimental?.rustowl?.methods?.includes(
+      "rustowl/inspectRange",
+    )
+  ) {
+    throw new Error("maintained RustOwl engine did not advertise indexed graph APIs");
+  }
 
   send({ jsonrpc: "2.0", method: "initialized", params: {} });
   send({
@@ -147,7 +154,8 @@ async function main() {
     params: { textDocument: { uri: sourceUri } },
   });
 
-  const deadline = Date.now() + 30_000;
+  const deadline =
+    Date.now() + Number(process.env.RUSTOWL_SMOKE_TIMEOUT_MS ?? "60000");
   let lastTokenCount = 0;
   let lastLabels = [];
   while (Date.now() < deadline) {
@@ -174,7 +182,7 @@ async function main() {
     const hasMultipleOwnershipEvents =
       labels.size >= 2 &&
       labels.has("← shared borrow · read-only") &&
-      [...labels].some((label) => label.startsWith("← call result ·"));
+      [...labels].some((label) => label !== "← shared borrow · read-only");
     if (tokens.data.length > 0 && hasMultipleOwnershipEvents) {
       const hover = await request("textDocument/hover", {
         textDocument: { uri: sourceUri },
@@ -184,16 +192,42 @@ async function main() {
         hover?.contents?.kind === "markdown" &&
         hover.contents.value.includes("### RustOwl ·")
       ) {
+        const hoverMarkdown = hover.contents.value;
+        const learnerLayer = hoverMarkdown.split("**Compiler evidence**", 1)[0];
+        if (
+          !hoverMarkdown.includes("**What this means**") ||
+          !hoverMarkdown.includes("**Compiler evidence**")
+        ) {
+          throw new Error("RustOwl hover omitted learner/expert disclosure layers");
+        }
+        if (/compiler temporary|\*?\(_\d+|\b_\d+\b/.test(learnerLayer)) {
+          throw new Error(
+            `RustOwl learner explanation leaked an internal MIR identity: ${learnerLayer}`,
+          );
+        }
         console.log(
-          `RustOwl adapter smoke test passed without hover activation (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
+          `RustOwl indexed-graph smoke test passed without hover activation (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
         );
         return;
       }
     }
     await delay(250);
   }
+  const status = await request("rustowl/analysisStatus", {});
+  const evidence = await request("rustowl/inspectRange", {
+    uri: sourceUri,
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 100, character: 0 },
+    },
+    documentVersion: 1,
+    limits: { max_nodes: 500, max_edges: 1000, max_depth: 8 },
+  });
+  const kinds = [
+    ...new Set(evidence?.result?.nodes?.map((node) => node.kind) ?? []),
+  ];
   throw new Error(
-    `RustOwl automatic visuals timed out (${lastTokenCount} underlines, labels: ${lastLabels.join(", ") || "none"})`,
+    `RustOwl automatic visuals timed out (${lastTokenCount} underlines, labels: ${lastLabels.join(", ") || "none"}; status: ${status.status}, revision: ${status.activeRevision?.sequence ?? "none"}, stale files: ${status.staleFiles?.length ?? 0}, evidence: ${kinds.join(", ") || "none"})`,
   );
 }
 

@@ -3,9 +3,11 @@ name = "RustOwl"
 version = "0.1.3"
 schema_version = 1
 authors = ["RustyAuth contributors"]
-description = "Visualize Rust ownership and lifetimes with RustOwl."
+description = "A compiler-grounded Rust ownership cockpit with inline guidance, layered hovers, async flows, and read-only agent tools."
 repository = "https://github.com/rusty-auth/rustowl-zed"
 
 [language_servers.rustowl]
 name = "RustOwl"
 languages = ["Rust"]
+
+[context_servers.rustowl-ownership]

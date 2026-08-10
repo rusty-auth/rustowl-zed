@@ -1,3 +1,4 @@
+mod graph;
 mod protocol;
 mod semantic;
 
@@ -9,11 +10,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use graph::{GraphQueryResponse, GraphSlice, graph_decorations};
 use protocol::{read_message, write_message};
 use semantic::{
     CursorResponse, Decoration, Position, Range, TOKEN_TYPES, contains, decoration_markdown,
-    decoration_presentation, identifier_positions, inlay_hints, ownership_flow_markdown,
-    position_for_rustowl, range_for_lsp, semantic_tokens,
+    decoration_presentation, document_range, identifier_positions, inlay_hints, inspect_range_at,
+    ownership_flow_markdown, position_for_rustowl, range_for_lsp, semantic_tokens,
 };
 use serde_json::{Map, Value, json};
 use tokio::{
@@ -45,6 +47,23 @@ struct PendingCursor {
     generation: u64,
 }
 
+#[derive(Debug)]
+enum GraphPurpose {
+    Hover {
+        client_id: Value,
+        position: Position,
+    },
+    Prefetch,
+}
+
+#[derive(Debug)]
+struct PendingGraph {
+    purpose: GraphPurpose,
+    uri: String,
+    range: Range,
+    generation: u64,
+}
+
 const MAX_PREFETCH_POSITIONS: usize = 256;
 
 #[derive(Default)]
@@ -54,11 +73,17 @@ struct State {
     pending_analyzes: HashMap<String, (String, u64)>,
     internal_client_ids: HashSet<String>,
     pending_cursors: HashMap<String, PendingCursor>,
+    pending_graphs: HashMap<String, PendingGraph>,
     prefetched_positions: HashMap<String, HashSet<Position>>,
+    requested_graph_ranges: HashMap<String, HashSet<Range>>,
     requested_inlay_ranges: HashMap<String, Range>,
+    open_document_ranges: HashMap<String, Range>,
     analyzed_documents: HashSet<String>,
     document_generations: HashMap<String, u64>,
+    document_versions: HashMap<String, i64>,
     decorations: HashMap<String, Vec<Decoration>>,
+    graph_slices: HashMap<String, Vec<GraphSlice>>,
+    graph_api_available: bool,
 }
 
 impl State {
@@ -70,6 +95,7 @@ impl State {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    register_zed_worktree()?;
     let rustowl =
         resolve_rustowl_binary(env::var("RUSTOWL_BINARY").unwrap_or_else(|_| "rustowl".into()));
     ensure_rustowl_toolchain(&rustowl).await?;
@@ -127,6 +153,53 @@ async fn main() -> Result<()> {
 
     child.kill().await.ok();
     Ok(())
+}
+
+fn register_zed_worktree() -> Result<()> {
+    let session = env::var("RUSTOWL_ZED_SESSION_ID").ok();
+    let worktree_id = env::var("RUSTOWL_ZED_WORKTREE_ID").ok();
+    let (session, worktree_id) = match (session, worktree_id) {
+        (Some(session), Some(worktree_id)) => (session, worktree_id),
+        (None, None) => return Ok(()),
+        _ => bail!("RustOwl Zed worktree registration is missing its session or worktree id"),
+    };
+    if !safe_registry_component(&session) || !safe_registry_component(&worktree_id) {
+        bail!("RustOwl Zed worktree registration contains an invalid identifier");
+    }
+    let root = env::current_dir()
+        .context("could not resolve the RustOwl Zed worktree")?
+        .canonicalize()
+        .context("could not canonicalize the RustOwl Zed worktree")?;
+    let directory = env::temp_dir()
+        .join("rustowl-zed")
+        .join("worktrees")
+        .join(session);
+    std::fs::create_dir_all(&directory)
+        .context("could not create the RustOwl Zed worktree registry")?;
+    let destination = directory.join(&worktree_id);
+    let temporary = directory.join(format!(".{worktree_id}.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, root.to_string_lossy().as_bytes())
+        .context("could not stage the RustOwl Zed worktree registry")?;
+    if let Err(error) = std::fs::rename(&temporary, &destination) {
+        if cfg!(windows) && error.kind() == std::io::ErrorKind::AlreadyExists {
+            std::fs::remove_file(&destination)
+                .context("could not replace the RustOwl Zed worktree registry")?;
+            std::fs::rename(&temporary, &destination)
+                .context("could not publish the RustOwl Zed worktree registry")?;
+        } else {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error).context("could not publish the RustOwl Zed worktree registry");
+        }
+    }
+    Ok(())
+}
+
+fn safe_registry_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn resolve_rustowl_binary(binary: String) -> String {
@@ -286,6 +359,31 @@ where
                     .cloned()
                     .context("hover request had no position")?,
             )?;
+            if state.graph_api_available {
+                let graph_id = state.internal_id("inspect-hover");
+                let range = inspect_range_at(&uri, position);
+                let generation = document_generation(state, &uri);
+                state.pending_graphs.insert(
+                    id_key(&graph_id),
+                    PendingGraph {
+                        purpose: GraphPurpose::Hover {
+                            client_id,
+                            position,
+                        },
+                        uri: uri.clone(),
+                        range,
+                        generation,
+                    },
+                );
+                return send_inspect_range(
+                    graph_id,
+                    &uri,
+                    range,
+                    state.document_versions.get(&uri).copied(),
+                    server,
+                )
+                .await;
+            }
             let cursor_id = state.internal_id("cursor");
             let generation = document_generation(state, &uri);
             state.pending_cursors.insert(
@@ -329,7 +427,13 @@ where
                 client,
                 &json!({"jsonrpc": "2.0", "id": id, "result": {"data": data}}),
             )
-            .await
+            .await?;
+            if state.graph_api_available
+                && let Some(range) = document_range(uri)
+            {
+                schedule_graph_prefetch(uri, range, state, server).await?;
+            }
+            Ok(())
         }
         Some("textDocument/inlayHint") => {
             let id = message
@@ -364,8 +468,34 @@ where
                 &json!({"jsonrpc": "2.0", "id": id, "result": hints}),
             )
             .await?;
-            if state.analyzed_documents.contains(&uri) {
+            if state.graph_api_available {
+                schedule_graph_prefetch(&uri, requested_range, state, server).await?;
+            } else if state.analyzed_documents.contains(&uri) {
                 schedule_visible_prefetch(&uri, requested_range, state, server).await?;
+            }
+            Ok(())
+        }
+        Some("textDocument/didOpen") => {
+            let uri = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+                .context("open notification had no document URI")?
+                .to_owned();
+            if let Some(version) = message
+                .pointer("/params/textDocument/version")
+                .and_then(Value::as_i64)
+            {
+                state.document_versions.insert(uri.clone(), version);
+            }
+            reset_document_visuals(state, &uri);
+            if let Some(range) = document_range(&uri) {
+                state.open_document_ranges.insert(uri.clone(), range);
+            }
+            write_message(server, &message).await?;
+            if state.graph_api_available
+                && let Some(range) = state.open_document_ranges.get(&uri).copied()
+            {
+                schedule_graph_prefetch(&uri, range, state, server).await?;
             }
             Ok(())
         }
@@ -378,6 +508,9 @@ where
             let generation = reset_document_visuals(state, &uri);
             request_visual_refresh(state, client).await?;
             write_message(server, &message).await?;
+            if state.graph_api_available {
+                return Ok(());
+            }
             let id = state.internal_id("analyze");
             state
                 .pending_analyzes
@@ -398,8 +531,26 @@ where
                 .pointer("/params/textDocument/uri")
                 .and_then(Value::as_str)
             {
+                if let Some(version) = message
+                    .pointer("/params/textDocument/version")
+                    .and_then(Value::as_i64)
+                {
+                    state.document_versions.insert(uri.to_owned(), version);
+                }
                 reset_document_visuals(state, uri);
                 request_visual_refresh(state, client).await?;
+            }
+            write_message(server, &message).await
+        }
+        Some("textDocument/didClose") => {
+            if let Some(uri) = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+            {
+                reset_document_visuals(state, uri);
+                state.open_document_ranges.remove(uri);
+                state.requested_inlay_ranges.remove(uri);
+                state.document_versions.remove(uri);
             }
             write_message(server, &message).await
         }
@@ -417,6 +568,24 @@ where
     C: tokio::io::AsyncWrite + Unpin,
     S: tokio::io::AsyncWrite + Unpin,
 {
+    if message.get("method").and_then(Value::as_str) == Some("rustowl/analysisUpdated") {
+        if state.graph_api_available {
+            let visible: Vec<_> = state
+                .open_document_ranges
+                .iter()
+                .map(|(uri, range)| (uri.clone(), *range))
+                .collect();
+            for (uri, _) in &visible {
+                reset_document_visuals(state, uri);
+                state.analyzed_documents.insert(uri.clone());
+            }
+            for (uri, range) in visible {
+                schedule_graph_prefetch(&uri, range, state, server).await?;
+            }
+            request_visual_refresh(state, client).await?;
+        }
+        return Ok(());
+    }
     let Some(id) = message.get("id").cloned() else {
         return write_message(client, &message).await;
     };
@@ -437,7 +606,11 @@ where
     if let Some(pending) = state.pending_cursors.remove(&key) {
         return handle_cursor_response(message, pending, state, client).await;
     }
+    if let Some(pending) = state.pending_graphs.remove(&key) {
+        return handle_graph_response(message, pending, state, client).await;
+    }
     if state.initialize_ids.remove(&key) {
+        state.graph_api_available = supports_indexed_graph(&message);
         augment_initialize_response(&mut message);
     }
     write_message(client, &message).await
@@ -538,6 +711,201 @@ where
     }
 }
 
+async fn handle_graph_response<C>(
+    message: Value,
+    pending: PendingGraph,
+    state: &mut State,
+    client: &mut C,
+) -> Result<()>
+where
+    C: tokio::io::AsyncWrite + Unpin,
+{
+    if let Some(error) = message.get("error") {
+        state
+            .requested_graph_ranges
+            .entry(pending.uri.clone())
+            .or_default()
+            .remove(&pending.range);
+        return match pending.purpose {
+            GraphPurpose::Hover { client_id, .. } => {
+                write_message(
+                    client,
+                    &json!({"jsonrpc": "2.0", "id": client_id, "error": error}),
+                )
+                .await
+            }
+            GraphPurpose::Prefetch => Ok(()),
+        };
+    }
+
+    let response: GraphQueryResponse = serde_json::from_value(
+        message
+            .get("result")
+            .cloned()
+            .context("RustOwl graph response had no result")?,
+    )?;
+    if document_generation(state, &pending.uri) != pending.generation {
+        return match pending.purpose {
+            GraphPurpose::Hover { client_id, .. } => {
+                write_message(
+                    client,
+                    &json!({"jsonrpc": "2.0", "id": client_id, "result": null}),
+                )
+                .await
+            }
+            GraphPurpose::Prefetch => Ok(()),
+        };
+    }
+
+    let mut new_decorations = Vec::new();
+    if let Some(slice) = response.result.as_ref() {
+        if slice.schema_version != 1 {
+            eprintln!(
+                "[rustowl-zed] unsupported ownership graph schema {}",
+                slice.schema_version
+            );
+        } else {
+            match graph_decorations(&pending.uri, slice) {
+                Ok(decorations) => new_decorations = decorations,
+                Err(error) => eprintln!("[rustowl-zed] could not render graph evidence: {error}"),
+            }
+            let slices = state.graph_slices.entry(pending.uri.clone()).or_default();
+            slices.push(slice.clone());
+            if slices.len() > 8 {
+                slices.remove(0);
+            }
+        }
+    }
+    if response.is_analyzed {
+        state.analyzed_documents.insert(pending.uri.clone());
+    }
+    merge_decorations(
+        state.decorations.entry(pending.uri.clone()).or_default(),
+        new_decorations,
+    );
+
+    match pending.purpose {
+        GraphPurpose::Hover {
+            client_id,
+            position,
+        } => {
+            let decorations = state
+                .decorations
+                .get(&pending.uri)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let ownership_flow = ownership_flow_markdown(&pending.uri, decorations);
+            let hover = hover_result(
+                position,
+                decorations,
+                response.status.as_ref(),
+                response.is_analyzed,
+                ownership_flow.as_deref(),
+            );
+            write_message(
+                client,
+                &json!({"jsonrpc": "2.0", "id": client_id, "result": hover}),
+            )
+            .await?;
+            request_visual_refresh(state, client).await
+        }
+        GraphPurpose::Prefetch => {
+            if has_pending_graph_prefetch(state, &pending.uri, pending.generation) {
+                Ok(())
+            } else {
+                request_visual_refresh(state, client).await
+            }
+        }
+    }
+}
+
+fn has_pending_graph_prefetch(state: &State, uri: &str, generation: u64) -> bool {
+    state.pending_graphs.values().any(|request| {
+        matches!(request.purpose, GraphPurpose::Prefetch)
+            && request.uri == uri
+            && request.generation == generation
+    })
+}
+
+async fn schedule_graph_prefetch<S>(
+    uri: &str,
+    range: Range,
+    state: &mut State,
+    server: &mut S,
+) -> Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    if !state
+        .requested_graph_ranges
+        .entry(uri.to_owned())
+        .or_default()
+        .insert(range)
+    {
+        return Ok(());
+    }
+    let id = state.internal_id("inspect-range");
+    state.pending_graphs.insert(
+        id_key(&id),
+        PendingGraph {
+            purpose: GraphPurpose::Prefetch,
+            uri: uri.to_owned(),
+            range,
+            generation: document_generation(state, uri),
+        },
+    );
+    send_inspect_range(
+        id,
+        uri,
+        range,
+        state.document_versions.get(uri).copied(),
+        server,
+    )
+    .await
+}
+
+async fn send_inspect_range<S>(
+    id: Value,
+    uri: &str,
+    range: Range,
+    document_version: Option<i64>,
+    server: &mut S,
+) -> Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    write_message(
+        server,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "rustowl/inspectRange",
+            "params": {
+                "uri": uri,
+                "range": range,
+                "documentVersion": document_version,
+                "limits": {
+                    "max_nodes": 500,
+                    "max_edges": 1000,
+                    "max_depth": 8
+                }
+            }
+        }),
+    )
+    .await
+}
+
+fn supports_indexed_graph(message: &Value) -> bool {
+    message
+        .pointer("/result/capabilities/experimental/rustowl/methods")
+        .and_then(Value::as_array)
+        .is_some_and(|methods| {
+            methods
+                .iter()
+                .any(|method| method.as_str() == Some("rustowl/inspectRange"))
+        })
+}
+
 fn has_pending_prefetch(state: &State, uri: &str, generation: u64) -> bool {
     state.pending_cursors.values().any(|cursor| {
         matches!(cursor.purpose, CursorPurpose::Prefetch)
@@ -570,6 +938,8 @@ fn reset_document_visuals(state: &mut State, uri: &str) -> u64 {
     *generation += 1;
     state.decorations.remove(uri);
     state.prefetched_positions.remove(uri);
+    state.requested_graph_ranges.remove(uri);
+    state.graph_slices.remove(uri);
     state.analyzed_documents.remove(uri);
     *generation
 }
@@ -649,7 +1019,12 @@ fn hover_result(
     }
 
     let mut markdown = String::new();
+    let mut primary_is_indexed_graph = false;
     if let Some(primary) = matching.first() {
+        primary_is_indexed_graph = primary
+            .hover_text
+            .as_deref()
+            .is_some_and(|text| text.starts_with("### RustOwl ·"));
         if let Some(primary_markdown) = decoration_markdown(primary) {
             markdown = primary_markdown;
         } else if let Some(report) = primary
@@ -669,14 +1044,22 @@ fn hover_result(
             let Some(presentation) = decoration_presentation(&decoration.kind) else {
                 continue;
             };
-            also_here.push(presentation.title);
+            if (!primary_is_indexed_graph
+                || !matches!(
+                    decoration.kind.as_str(),
+                    "lifetime" | "definitely_live" | "maybe_initialized"
+                ))
+                && also_here.len() < 4
+            {
+                also_here.push(presentation.title);
+            }
         }
         if !also_here.is_empty() {
             markdown.push_str(&format!("\n\n**Also active** · {}", also_here.join(" · ")));
         }
     }
 
-    if let Some(ownership_flow) = ownership_flow {
+    if !primary_is_indexed_graph && let Some(ownership_flow) = ownership_flow {
         if !markdown.is_empty() {
             markdown.push_str("\n\n");
         }
@@ -702,7 +1085,15 @@ fn hover_result(
 
 fn analysis_markdown(status: Option<&Value>, is_analyzed: bool) -> String {
     if !is_analyzed {
-        return "**Analysis** · Waiting for a saved result — save this file to run RustOwl.".into();
+        return match status.and_then(Value::as_str) {
+            Some("analyzing") => {
+                "**Analysis** · Indexing this workspace — compiler ownership evidence will appear automatically.".into()
+            }
+            Some("error") => {
+                "**Analysis** · Indexing failed — check the RustOwl language-server output.".into()
+            }
+            _ => "**Analysis** · Waiting for a saved result — save this file to run RustOwl.".into(),
+        };
     }
     match status.and_then(Value::as_str) {
         Some("finished") => String::new(),
@@ -936,5 +1327,22 @@ mod tests {
                 .unwrap()
                 .contains("save this file to run RustOwl")
         );
+    }
+
+    #[test]
+    fn explains_initial_workspace_indexing_without_asking_for_a_save() {
+        let hover = hover_result(
+            Position {
+                line: 0,
+                character: 0,
+            },
+            &[],
+            Some(&json!("analyzing")),
+            false,
+            None,
+        );
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.contains("Indexing this workspace"));
+        assert!(!markdown.contains("save this file"));
     }
 }

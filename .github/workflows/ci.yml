@@ -25,3 +25,19 @@ jobs:
         run: cargo clippy --locked --manifest-path adapter/Cargo.toml --all-targets -- -D warnings
       - name: Test adapter
         run: cargo test --locked --manifest-path adapter/Cargo.toml
+
+  engine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Initialize maintained engine
+        run: git submodule update --init --depth 1 engine
+      - name: Check engine formatting
+        working-directory: engine
+        run: cargo fmt -- --check
+      - name: Lint engine and agent server
+        working-directory: engine
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test engine, Helix recovery, and MCP tools
+        working-directory: engine
+        run: cargo test --locked

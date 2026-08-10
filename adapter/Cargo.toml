@@ -20,3 +20,6 @@ tokio = { version = "1.47", features = [
   "sync",
 ] }
 url = "2.5"
+
+[dev-dependencies]
+tempfile = "3"

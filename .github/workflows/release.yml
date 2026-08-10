@@ -35,30 +35,62 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Initialize production and licence submodules
+        shell: bash
+        run: git submodule update --init --depth 1 engine references/helix-db
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
       - name: Build adapter
         run: >-
           cargo build --locked --release --manifest-path adapter/Cargo.toml
           --target ${{ matrix.target }}
-      - name: Package adapter (Unix)
-        if: matrix.archive == 'tar'
+      - name: Build compiler engine and MCP server
+        working-directory: engine
+        run: cargo build --locked --release --bins
+      - name: Generate CycloneDX software bill of materials
         shell: bash
         run: |
           mkdir staging
+          node scripts/generate-sbom.mjs staging/sbom.cdx.json
+      - name: Package unified runtime (Unix)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
           cp "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter" staging/
-          tar -C staging -czf "rustowl-zed-adapter-${{ matrix.target }}.tar.gz" rustowl-zed-adapter
-      - name: Package adapter (Windows)
+          cp engine/target/release/rustowl staging/
+          cp engine/target/release/rustowlc staging/
+          cp engine/target/release/rustowl-mcp staging/
+          cp LICENSE staging/LICENSE-MIT
+          cp engine/LICENSE staging/LICENSE-MPL-2.0
+          cp references/helix-db/LICENSE staging/LICENSE-APACHE-2.0
+          cp THIRD_PARTY_NOTICES.md staging/
+          cp engine/THIRD_PARTY_NOTICES.md staging/ENGINE_THIRD_PARTY_NOTICES.md
+          cp runtime/manifest.json staging/
+          (cd staging && shasum -a 256 rustowl-zed-adapter rustowl rustowlc rustowl-mcp manifest.json sbom.cdx.json LICENSE-MIT LICENSE-MPL-2.0 LICENSE-APACHE-2.0 THIRD_PARTY_NOTICES.md ENGINE_THIRD_PARTY_NOTICES.md > checksums.sha256)
+          tar -C staging -czf "rustowl-zed-runtime-${{ matrix.target }}.tar.gz" .
+      - name: Package unified runtime (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory staging
           Copy-Item "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter.exe" staging/
-          Compress-Archive -Path staging/rustowl-zed-adapter.exe -DestinationPath "rustowl-zed-adapter-${{ matrix.target }}.zip"
+          Copy-Item engine/target/release/rustowl.exe staging/
+          Copy-Item engine/target/release/rustowlc.exe staging/
+          Copy-Item engine/target/release/rustowl-mcp.exe staging/
+          Copy-Item LICENSE staging/LICENSE-MIT
+          Copy-Item engine/LICENSE staging/LICENSE-MPL-2.0
+          Copy-Item references/helix-db/LICENSE staging/LICENSE-APACHE-2.0
+          Copy-Item THIRD_PARTY_NOTICES.md staging/
+          Copy-Item engine/THIRD_PARTY_NOTICES.md staging/ENGINE_THIRD_PARTY_NOTICES.md
+          Copy-Item runtime/manifest.json staging/
+          Get-ChildItem staging/* -File | Where-Object { $_.Name -ne "checksums.sha256" } | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Add-Content staging/checksums.sha256
+          }
+          Compress-Archive -Path staging/* -DestinationPath "rustowl-zed-runtime-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v7
         with:
-          name: rustowl-zed-adapter-${{ matrix.target }}
-          path: rustowl-zed-adapter-${{ matrix.target }}.*
+          name: rustowl-zed-runtime-${{ matrix.target }}
+          path: rustowl-zed-runtime-${{ matrix.target }}.*
           if-no-files-found: error
 
   publish:

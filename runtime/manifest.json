@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "extensionVersion": "0.1.3",
+  "engineVersion": "0.4.0",
+  "graphEngineVersion": "0.4.0+rustyauth.3",
+  "ownershipGraphSchemaVersion": 1,
+  "binaries": [
+    "rustowl-zed-adapter",
+    "rustowl",
+    "rustowlc",
+    "rustowl-mcp"
+  ],
+  "persistence": {
+    "backend": "embedded-helixdb",
+    "networkRequired": false,
+    "writer": "rustowl",
+    "readers": ["rustowl", "rustowl-mcp"]
+  },
+  "evidencePolicy": {
+    "compilerFacts": "revisioned",
+    "agentAccess": "read-only",
+    "unsavedBuffers": "excluded"
+  }
+}
