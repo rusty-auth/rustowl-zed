@@ -36,9 +36,17 @@ pub struct Decoration {
     pub overlapped: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DecorationPresentation {
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub facts: &'static [(&'static str, &'static str)],
+    pub inlay_label: Option<&'static str>,
+    pub priority: u8,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct CursorResponse {
-    #[allow(dead_code)]
     #[serde(default)]
     pub is_analyzed: bool,
     #[serde(default)]
@@ -120,11 +128,7 @@ pub fn inlay_hints(requested_range: Range, decorations: &[Decoration]) -> Vec<Va
             ("label".into(), Value::String(label.into())),
             ("paddingLeft".into(), Value::Bool(true)),
         ]);
-        if let Some(tooltip) = decoration
-            .hover_text
-            .as_deref()
-            .filter(|tooltip| !tooltip.is_empty())
-        {
+        if let Some(tooltip) = decoration_markdown(decoration) {
             hint.insert(
                 "tooltip".into(),
                 serde_json::json!({"kind": "markdown", "value": tooltip}),
@@ -175,17 +179,175 @@ fn token_type(kind: &str) -> Option<u32> {
 }
 
 fn inlay_label(kind: &str) -> Option<&'static str> {
+    decoration_presentation(kind)?.inlay_label
+}
+
+pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
     match kind {
-        "maybe_initialized" => Some("← maybe initialized"),
-        "imm_borrow" => Some("← immutable borrow"),
-        "mut_borrow" => Some("← mutable borrow"),
-        "move" => Some("← moved"),
-        "call" => Some("← call"),
-        "outlive" => Some("← must outlive"),
-        "shared_mut" => Some("← conflicting borrows"),
-        "lifetime" | "definitely_live" => None,
+        "lifetime" => Some(DecorationPresentation {
+            title: "Lifetime region",
+            summary: "RustOwl is tracing the source region where this value remains available.",
+            facts: &[
+                (
+                    "Scope",
+                    "inferred from MIR; this is not a `'static` annotation",
+                ),
+                (
+                    "Meaning",
+                    "storage and uses stay connected throughout this region",
+                ),
+            ],
+            inlay_label: None,
+            priority: 10,
+        }),
+        "definitely_live" => Some(DecorationPresentation {
+            title: "Definitely live",
+            summary: "The value is initialized on every analyzed control-flow path here.",
+            facts: &[
+                (
+                    "Guarantee",
+                    "no move or drop has made the value unavailable",
+                ),
+                (
+                    "Access",
+                    "its storage contains a value; active borrows may still restrict use",
+                ),
+            ],
+            inlay_label: None,
+            priority: 20,
+        }),
+        "maybe_initialized" => Some(DecorationPresentation {
+            title: "Maybe live",
+            summary: "The value is available on some analyzed paths, but not guaranteed on all of them.",
+            facts: &[
+                (
+                    "Risk",
+                    "a branch may leave the value uninitialized or moved",
+                ),
+                (
+                    "Check",
+                    "make every path establish ownership before the next use",
+                ),
+            ],
+            inlay_label: Some("← maybe live · path-dependent"),
+            priority: 30,
+        }),
+        "call" => Some(DecorationPresentation {
+            title: "Value-producing call",
+            summary: "This function call creates or assigns the selected value.",
+            facts: &[
+                (
+                    "Result",
+                    "the returned value becomes the selected binding's next state",
+                ),
+                (
+                    "Contract",
+                    "the callee's signature determines returned ownership and lifetimes",
+                ),
+            ],
+            inlay_label: Some("← call result · value created"),
+            priority: 40,
+        }),
+        "imm_borrow" => Some(DecorationPresentation {
+            title: "Shared borrow",
+            summary: "`&T` grants read-only access without transferring ownership.",
+            facts: &[
+                ("Ownership", "the source keeps the value"),
+                ("Aliasing", "multiple shared readers may coexist"),
+                ("Mutation", "blocked until the last shared use ends"),
+            ],
+            inlay_label: Some("← shared borrow · read-only"),
+            priority: 60,
+        }),
+        "mut_borrow" => Some(DecorationPresentation {
+            title: "Exclusive borrow",
+            summary: "`&mut T` grants temporary write access without transferring ownership.",
+            facts: &[
+                (
+                    "Aliasing",
+                    "this must be the only active reference to the borrowed place",
+                ),
+                (
+                    "Access",
+                    "competing reads and writes wait until the borrow ends",
+                ),
+                (
+                    "Duration",
+                    "normally ends at its last use under non-lexical lifetimes",
+                ),
+            ],
+            inlay_label: Some("← exclusive borrow · writable"),
+            priority: 70,
+        }),
+        "move" => Some(DecorationPresentation {
+            title: "Ownership moved",
+            summary: "The value is transferred to a new owner at this expression.",
+            facts: &[
+                (
+                    "Afterward",
+                    "the moved place is unavailable until reinitialized",
+                ),
+                (
+                    "Alternative",
+                    "borrow the value when the receiver does not need ownership",
+                ),
+            ],
+            inlay_label: Some("← ownership moved · source unavailable"),
+            priority: 80,
+        }),
+        "outlive" => Some(DecorationPresentation {
+            title: "Required lifetime",
+            summary: "A later dependency requires this value to remain valid here.",
+            facts: &[
+                (
+                    "Constraint",
+                    "the source must outlive every reference or use depending on it",
+                ),
+                (
+                    "Typical fix",
+                    "extend the source scope or shorten the dependent lifetime",
+                ),
+            ],
+            inlay_label: Some("← lifetime required · must stay live"),
+            priority: 90,
+        }),
+        "shared_mut" => Some(DecorationPresentation {
+            title: "Borrow conflict",
+            summary: "Shared and exclusive borrows overlap at this point.",
+            facts: &[
+                (
+                    "Rule",
+                    "`&mut T` cannot overlap `&T` or another `&mut T` to the same place",
+                ),
+                (
+                    "Typical fix",
+                    "end the earlier borrow, shorten its scope, or reorder operations",
+                ),
+            ],
+            inlay_label: Some("← borrow conflict · shared + mutable"),
+            priority: 100,
+        }),
         _ => None,
     }
+}
+
+pub fn decoration_markdown(decoration: &Decoration) -> Option<String> {
+    let presentation = decoration_presentation(&decoration.kind)?;
+    let mut markdown = format!(
+        "### RustOwl · {}\n\n{}\n\n",
+        presentation.title, presentation.summary
+    );
+    for (label, value) in presentation.facts {
+        markdown.push_str(&format!("- **{label}** · {value}\n"));
+    }
+    if let Some(report) = decoration
+        .hover_text
+        .as_deref()
+        .filter(|report| !report.is_empty())
+    {
+        markdown.push_str(&format!("\n> **RustOwl report** · {report}"));
+    }
+    Some(markdown)
 }
 
 fn split_range(range: Range, source: Option<&str>) -> Vec<(u32, u32, u32)> {
@@ -261,7 +423,10 @@ fn utf16_to_char_column(line: &str, utf16_column: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decoration, Position, Range, inlay_hints, semantic_tokens};
+    use super::{
+        Decoration, Position, Range, decoration_markdown, decoration_presentation, inlay_hints,
+        semantic_tokens,
+    };
 
     #[test]
     fn encodes_sorted_single_line_tokens() {
@@ -354,7 +519,81 @@ mod tests {
             &decorations,
         );
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0]["label"], "← moved");
-        assert_eq!(hints[0]["tooltip"]["value"], "variable moved");
+        assert_eq!(hints[0]["label"], "← ownership moved · source unavailable");
+        let tooltip = hints[0]["tooltip"]["value"].as_str().unwrap();
+        assert!(tooltip.contains("### RustOwl · Ownership moved"));
+        assert!(tooltip.contains("the moved place is unavailable"));
+        assert!(tooltip.contains("> **RustOwl report** · variable moved"));
+    }
+
+    #[test]
+    fn explains_lifetime_regions_even_without_an_inline_hint() {
+        let decoration = Decoration {
+            kind: "lifetime".into(),
+            range: Range {
+                start: Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: Position {
+                    line: 4,
+                    character: 9,
+                },
+            },
+            hover_text: Some("lifetime of variable `message`".into()),
+            overlapped: false,
+        };
+        let markdown = decoration_markdown(&decoration).unwrap();
+        assert!(markdown.contains("### RustOwl · Lifetime region"));
+        assert!(markdown.contains("this is not a `'static` annotation"));
+        assert!(markdown.contains("lifetime of variable `message`"));
+    }
+
+    #[test]
+    fn presents_every_upstream_decoration_kind() {
+        let cases = [
+            ("lifetime", "Lifetime region", None),
+            ("definitely_live", "Definitely live", None),
+            (
+                "maybe_initialized",
+                "Maybe live",
+                Some("← maybe live · path-dependent"),
+            ),
+            (
+                "imm_borrow",
+                "Shared borrow",
+                Some("← shared borrow · read-only"),
+            ),
+            (
+                "mut_borrow",
+                "Exclusive borrow",
+                Some("← exclusive borrow · writable"),
+            ),
+            (
+                "move",
+                "Ownership moved",
+                Some("← ownership moved · source unavailable"),
+            ),
+            (
+                "call",
+                "Value-producing call",
+                Some("← call result · value created"),
+            ),
+            (
+                "outlive",
+                "Required lifetime",
+                Some("← lifetime required · must stay live"),
+            ),
+            (
+                "shared_mut",
+                "Borrow conflict",
+                Some("← borrow conflict · shared + mutable"),
+            ),
+        ];
+        for (kind, title, label) in cases {
+            let presentation = decoration_presentation(kind).unwrap();
+            assert_eq!(presentation.title, title);
+            assert_eq!(presentation.inlay_label, label);
+        }
     }
 }

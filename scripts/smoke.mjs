@@ -143,7 +143,7 @@ async function main() {
 
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    await request("textDocument/hover", {
+    const hover = await request("textDocument/hover", {
       textDocument: { uri: sourceUri },
       position: { line: 2, character: 22 },
     });
@@ -157,9 +157,21 @@ async function main() {
         end: { line: 100, character: 0 },
       },
     });
-    if (tokens.data.length > 0 && hints.length > 0) {
+    const richHint = hints.find(
+      (hint) =>
+        typeof hint.label === "string" &&
+        hint.label.includes(" · ") &&
+        hint.tooltip?.kind === "markdown" &&
+        hint.tooltip.value.includes("### RustOwl ·"),
+    );
+    if (
+      tokens.data.length > 0 &&
+      richHint &&
+      hover?.contents?.kind === "markdown" &&
+      hover.contents.value.includes("### RustOwl ·")
+    ) {
       console.log(
-        `RustOwl adapter smoke test passed (${tokens.data.length / 5} underlines, ${hints.length} inline hints).`,
+        `RustOwl adapter smoke test passed (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
       );
       return;
     }

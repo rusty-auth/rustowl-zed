@@ -7,17 +7,17 @@
     <style>
       :root {
         color-scheme: dark;
-        --editor: #111317;
-        --editor-line: #161a21;
-        --foreground: #d8dce5;
-        --muted: #626875;
-        --popover: #25262b;
-        --popover-border: #3b3d45;
-        --green: #52d65b;
-        --blue: #647cf3;
-        --purple: #d65bd1;
-        --orange: #d69852;
-        --red: #d65252;
+        --editor: #1d2021;
+        --editor-line: #282828;
+        --foreground: #ebdbb2;
+        --muted: #928374;
+        --popover: #3c3836;
+        --popover-border: #504945;
+        --green: #b8bb26;
+        --blue: #83a598;
+        --purple: #d3869b;
+        --orange: #fe8019;
+        --red: #fb4934;
       }
 
       * { box-sizing: border-box; }
@@ -33,7 +33,7 @@
       body {
         display: grid;
         place-items: center;
-        background: #0b0d10;
+        background: #141617;
       }
 
       .editor {
@@ -41,7 +41,7 @@
         width: 1360px;
         height: 560px;
         overflow: hidden;
-        border: 1px solid #2a2d34;
+        border: 1px solid #3c3836;
         border-radius: 10px;
         background: var(--editor);
         box-shadow: 0 20px 55px rgba(0, 0, 0, 0.42);
@@ -71,21 +71,21 @@
 
       .number {
         padding-right: 20px;
-        color: #555b67;
+        color: #665c54;
         font-size: 14px;
         text-align: right;
         user-select: none;
       }
 
       .source { color: var(--foreground); }
-      .kw { color: #c792ea; }
-      .fn { color: #82aaff; }
-      .type { color: #ffcb6b; }
-      .str { color: #c3e88d; }
-      .macro { color: #89ddff; }
-      .num { color: #f78c6c; }
-      .mut { color: #f78c6c; }
-      .life { color: #a7e06f; font-style: italic; }
+      .kw { color: #d3869b; }
+      .fn { color: #83a598; }
+      .type { color: #fabd2f; }
+      .str { color: #b8bb26; }
+      .macro { color: #8ec07c; }
+      .num { color: #fe8019; }
+      .mut { color: #fb4934; }
+      .life { color: #b8bb26; font-style: italic; }
 
       .u-green,
       .u-blue,
@@ -104,7 +104,7 @@
 
       .hint {
         margin-left: 15px;
-        color: #777e8d;
+        color: #928374;
         font-size: 15px;
         font-style: italic;
         vertical-align: 1px;
@@ -115,34 +115,85 @@
         z-index: 2;
         top: var(--popover-top);
         right: 34px;
-        width: 376px;
-        padding: 12px;
+        width: 460px;
+        padding: 14px 16px;
         border: 1px solid var(--popover-border);
         border-radius: 8px;
         background: var(--popover);
-        color: #d7d9df;
+        color: #d5c4a1;
         box-shadow: 0 12px 30px rgba(0, 0, 0, 0.44);
-        font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 13px/1.48 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .popover h3 {
+        margin: 0 0 8px;
+        color: #fbf1c7;
+        font-size: 16px;
+        line-height: 1.3;
+      }
+
+      .popover h3 span {
+        color: #928374;
+        font-weight: 400;
+      }
+
+      .popover h4 {
+        margin: 0 0 7px;
+        color: #ebdbb2;
+        font-size: 13px;
       }
 
       .popover p {
-        margin: 0 0 10px;
+        margin: 0;
       }
 
-      .popover p:last-child {
-        margin-bottom: 0;
+      .summary {
+        color: #d5c4a1;
+      }
+
+      .facts,
+      .also-list {
+        display: grid;
+        gap: 4px;
+        margin: 9px 0 0;
+        padding-left: 19px;
+        color: #bdae93;
+      }
+
+      .facts strong,
+      .also-list strong {
+        color: #ebdbb2;
+      }
+
+      .report {
+        margin-top: 11px !important;
+        padding: 7px 10px;
+        border-left: 2px solid #d65d0e;
+        background: #282828;
+        color: #d5c4a1;
+      }
+
+      .divider {
+        height: 1px;
+        margin: 11px 0;
+        border: 0;
+        background: #504945;
+      }
+
+      .analysis {
+        color: #bdae93;
       }
 
       .popover strong {
-        color: #f1f2f4;
+        color: #fbf1c7;
         font-weight: 700;
       }
 
       .popover code {
         padding: 2px 5px;
         border-radius: 4px;
-        background: #17191e;
-        color: #d8dbe2;
+        background: #282828;
+        color: #ebdbb2;
         font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
       }
     </style>
@@ -150,33 +201,44 @@
   <body>
     <main id="editor" class="editor">
       <section id="code" class="code"></section>
-      <aside id="popover" class="popover">
-        <p><strong>RustOwl</strong></p>
-        <p id="hover-message"></p>
-        <p>Analysis status: <code>finished</code></p>
-      </aside>
+      <aside id="popover" class="popover"></aside>
     </main>
 
     <script>
       const scenes = {
         borrow: {
           codeTop: "142px",
-          popoverTop: "168px",
+          popoverTop: "74px",
           focus: 3,
-          hover: "immutable borrow",
+          title: "Shared borrow",
+          summary: "<code>&amp;T</code> grants read-only access without transferring ownership.",
+          facts: [
+            ["Ownership", "the source keeps the value"],
+            ["Aliasing", "multiple shared readers may coexist"],
+            ["Mutation", "blocked until the last shared use ends"]
+          ],
+          report: "immutable borrow",
+          also: [["Definitely live", "variable <code>message</code> definitely lives here"]],
           lines: [
             `<span class="kw">fn</span> <span class="fn">greet</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">message</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"hello, Rust"</span>);`,
-            `    <span class="kw">let</span> borrowed = <span class="u-blue">&amp;message</span>;<span class="hint">← immutable borrow</span>`,
+            `    <span class="kw">let</span> borrowed = <span class="u-blue">&amp;message</span>;<span class="hint">← shared borrow · read-only</span>`,
             `    <span class="macro">println!</span>(<span class="str">"{borrowed}"</span>);`,
             `}`
           ]
         },
         move: {
           codeTop: "58px",
-          popoverTop: "242px",
+          popoverTop: "82px",
           focus: 7,
-          hover: "variable moved",
+          title: "Ownership moved",
+          summary: "The value is transferred to a new owner at this expression.",
+          facts: [
+            ["Afterward", "the moved place is unavailable until reinitialized"],
+            ["Alternative", "borrow the value when the receiver does not need ownership"]
+          ],
+          report: "variable moved",
+          also: [],
           lines: [
             `<span class="kw">fn</span> <span class="fn">send</span>(payload: <span class="type">String</span>) {`,
             `    <span class="fn">drop</span>(payload);`,
@@ -184,30 +246,44 @@
             ``,
             `<span class="kw">fn</span> <span class="fn">main</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">payload</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"signed token"</span>);`,
-            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint">← moved</span>`,
+            `    <span class="fn">send</span>(<span class="u-orange">payload</span>);<span class="hint">← ownership moved · source unavailable</span>`,
             `    <span class="macro">println!</span>(<span class="str">"{</span><span class="u-red">payload</span><span class="str">}"</span>);`,
             `}`
           ]
         },
         conflict: {
           codeTop: "118px",
-          popoverTop: "210px",
+          popoverTop: "66px",
           focus: 4,
-          hover: "immutable and mutable borrows of scores exist here",
+          title: "Borrow conflict",
+          summary: "Shared and exclusive borrows overlap at this point.",
+          facts: [
+            ["Rule", "<code>&amp;mut T</code> cannot overlap <code>&amp;T</code> or another <code>&amp;mut T</code> to the same place"],
+            ["Typical fix", "end the earlier borrow, shorten its scope, or reorder operations"]
+          ],
+          report: "immutable and mutable borrows of variable <code>scores</code> exist here",
+          also: [["Required lifetime", "<code>scores</code> must remain valid for the active references"]],
           lines: [
             `<span class="kw">fn</span> <span class="fn">adjust</span>() {`,
             `    <span class="kw">let</span> <span class="mut">mut</span> scores = <span class="macro">vec!</span>[<span class="num">10</span>, <span class="num">20</span>, <span class="num">30</span>];`,
-            `    <span class="kw">let</span> first = <span class="u-purple">&amp;mut scores[0]</span>;<span class="hint">← mutable borrow</span>`,
-            `    <span class="kw">let</span> second = <span class="u-red">&amp;scores[1]</span>;<span class="hint">← conflicting borrows</span>`,
+            `    <span class="kw">let</span> first = <span class="u-purple">&amp;mut scores[0]</span>;<span class="hint">← exclusive borrow · writable</span>`,
+            `    <span class="kw">let</span> second = <span class="u-red">&amp;scores[1]</span>;<span class="hint">← borrow conflict · shared + mutable</span>`,
             `    *first += *second;`,
             `}`
           ]
         },
         lifetime: {
           codeTop: "36px",
-          popoverTop: "210px",
+          popoverTop: "70px",
           focus: 6,
-          hover: "left definitely lives here",
+          title: "Definitely live",
+          summary: "The value is initialized on every analyzed control-flow path here.",
+          facts: [
+            ["Guarantee", "no move or drop has made the value unavailable"],
+            ["Access", "its storage contains a value; active borrows may still restrict use"]
+          ],
+          report: "variable <code>left</code> definitely lives here",
+          also: [["Lifetime region", "lifetime of variable <code>left</code>"]],
           lines: [
             `<span class="kw">fn</span> <span class="fn">longest</span>&lt;<span class="u-green life">'a</span>&gt;(`,
             `    left: &amp;<span class="u-green life">'a</span> <span class="type">str</span>,`,
@@ -228,7 +304,22 @@
       const editor = document.getElementById("editor");
       editor.style.setProperty("--code-top", scene.codeTop);
       editor.style.setProperty("--popover-top", scene.popoverTop);
-      document.getElementById("hover-message").textContent = scene.hover;
+      const facts = scene.facts
+        .map(([label, value]) => `<li><strong>${label}</strong> · ${value}</li>`)
+        .join("");
+      const also = scene.also.length
+        ? `<hr class="divider"><h4>Also active here</h4><ul class="also-list">${scene.also
+            .map(([label, value]) => `<li><strong>${label}</strong> · ${value}</li>`)
+            .join("")}</ul>`
+        : "";
+      document.getElementById("popover").innerHTML = `
+        <h3>RustOwl <span>·</span> ${scene.title}</h3>
+        <p class="summary">${scene.summary}</p>
+        <ul class="facts">${facts}</ul>
+        <p class="report"><strong>RustOwl report</strong> · ${scene.report}</p>
+        ${also}
+        <hr class="divider">
+        <p class="analysis"><strong>Analysis</strong> · Complete</p>`;
       document.getElementById("code").innerHTML = scene.lines
         .map((source, index) => `<div class="line ${index + 1 === scene.focus ? "focus" : ""}"><span class="number">${index + 1}</span><span class="source">${source || "&nbsp;"}</span></div>`)
         .join("");

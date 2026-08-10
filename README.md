@@ -27,24 +27,30 @@ testing and upstream feedback are the remaining gates before submission.
 
 ## What it looks like
 
-Faithful previews of the current adapter output: Zed's native LSP hover popover,
-semantic-token underlines, and inlay hints. Exact colours follow your Zed theme.
+Faithful previews of the current adapter output: rich ownership explanations in
+Zed's native LSP hover popover, semantic-token underlines, and inlay hints. The
+showcases use a warm Gruvbox-inspired palette chosen to complement RustyAuth;
+popover and hint chrome still follow your active Zed theme.
+
+Each hover preserves RustOwl's exact report, then adds the relevant ownership
+rule, its practical effect, a likely fix when appropriate, other lifetime states
+active at that location, and the current analysis state.
 
 **Immutable borrowing**
 
-<a href="assets/showcase/zed-borrow.webp"><img src="assets/showcase/zed-borrow.webp" width="100%" alt="Zed editor showing an immutable Rust borrow with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+<a href="assets/showcase/zed-rich-borrow.webp"><img src="assets/showcase/zed-rich-borrow.webp" width="100%" alt="Zed editor showing a shared Rust borrow with semantic underlines, a read-only inlay hint, and a rich native RustOwl hover explanation"></a>
 
 **Ownership moves**
 
-<a href="assets/showcase/zed-move.webp"><img src="assets/showcase/zed-move.webp" width="100%" alt="Zed editor showing Rust ownership moving into a function call with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+<a href="assets/showcase/zed-rich-move.webp"><img src="assets/showcase/zed-rich-move.webp" width="100%" alt="Zed editor showing Rust ownership moving into a function call with semantic underlines, a source-unavailable inlay hint, and a rich native RustOwl hover explanation"></a>
 
 **Conflicting borrows**
 
-<a href="assets/showcase/zed-conflict.webp"><img src="assets/showcase/zed-conflict.webp" width="100%" alt="Zed editor showing overlapping mutable and immutable Rust borrows with RustOwl semantic underlines, inlay hints, and a native hover popover"></a>
+<a href="assets/showcase/zed-rich-conflict.webp"><img src="assets/showcase/zed-rich-conflict.webp" width="100%" alt="Zed editor showing overlapping mutable and shared Rust borrows with semantic underlines, richer inlay hints, and a native RustOwl hover explaining the conflict and likely fix"></a>
 
 **Lifetime relationships**
 
-<a href="assets/showcase/zed-lifetime.webp"><img src="assets/showcase/zed-lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with RustOwl semantic underlines and a native hover popover"></a>
+<a href="assets/showcase/zed-rich-lifetime.webp"><img src="assets/showcase/zed-rich-lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with semantic underlines and a native RustOwl hover explaining definitely-live and lifetime-region states"></a>
 
 ## Install
 
@@ -125,10 +131,12 @@ The colours follow RustOwl's visual vocabulary:
 
 You may replace the colours with any hex values supported by Zed.
 
-With inlay hints enabled, ownership events also receive subtle inline helpers
-such as `← immutable borrow`, `← moved`, and `← conflicting borrows`. These are
-standard Zed inlay hints, so they inherit the active theme and can be toggled
-from Zed's editor controls.
+With inlay hints enabled, ownership events also receive compact inline helpers
+such as `← shared borrow · read-only`,
+`← ownership moved · source unavailable`, and
+`← borrow conflict · shared + mutable`. Hovering an inline helper opens the
+same educational ownership card. These are standard Zed inlay hints, so they
+inherit the active theme and can be toggled from Zed's editor controls.
 
 ## How it works
 
@@ -141,8 +149,9 @@ The `rustowl-zed-adapter` executable bridges that gap:
 1. Zed sends a standard hover request to the adapter.
 2. The adapter translates it to `rustowl/cursor`.
 3. RustOwl returns typed source ranges.
-4. The adapter exposes those ranges as standard semantic tokens and inlay
-   hints, then asks Zed to refresh them.
+4. The adapter exposes those ranges as standard semantic tokens, structured
+   Markdown hovers, and inlay hints with matching Markdown tooltips, then asks
+   Zed to refresh them.
 
 The adapter also turns each save notification into `rustowl/analyze`, matching
 the behaviour of RustOwl's official editor clients.

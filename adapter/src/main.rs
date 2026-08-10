@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use protocol::{read_message, write_message};
 use semantic::{
-    CursorResponse, Decoration, Position, Range, TOKEN_TYPES, contains, inlay_hints,
-    position_for_rustowl, range_for_lsp, semantic_tokens,
+    CursorResponse, Decoration, Position, Range, TOKEN_TYPES, contains, decoration_markdown,
+    decoration_presentation, inlay_hints, position_for_rustowl, range_for_lsp, semantic_tokens,
 };
 use serde_json::{Map, Value, json};
 use tokio::{
@@ -406,10 +406,10 @@ where
         .collect();
 
     let hover = hover_result(
-        &pending.uri,
         pending.position,
         &lsp_decorations,
         response.status.as_ref(),
+        response.is_analyzed,
     );
     state
         .decorations
@@ -423,45 +423,85 @@ where
 }
 
 fn hover_result(
-    _uri: &str,
     position: Position,
     decorations: &[Decoration],
     status: Option<&Value>,
+    is_analyzed: bool,
 ) -> Value {
-    let mut messages = Vec::new();
-    let mut seen = HashSet::new();
-    let mut hover_range = None;
-    for decoration in decorations {
-        if contains(decoration.range, position) {
-            hover_range.get_or_insert(decoration.range);
-            if decoration.kind != "lifetime"
-                && let Some(text) = decoration.hover_text.as_deref()
-                && !text.is_empty()
-                && seen.insert(text.to_owned())
-            {
-                messages.push(text.to_owned());
+    let mut matching: Vec<_> = decorations
+        .iter()
+        .filter(|decoration| contains(decoration.range, position))
+        .collect();
+    matching.sort_by_key(|decoration| {
+        std::cmp::Reverse(
+            decoration_presentation(&decoration.kind)
+                .map(|presentation| presentation.priority)
+                .unwrap_or_default(),
+        )
+    });
+
+    if matching.is_empty() && is_analyzed && status.and_then(Value::as_str) == Some("finished") {
+        return Value::Null;
+    }
+
+    let mut sections = Vec::new();
+    if let Some(primary) = matching.first() {
+        if let Some(markdown) = decoration_markdown(primary) {
+            sections.push(markdown);
+        } else if let Some(report) = primary
+            .hover_text
+            .as_deref()
+            .filter(|report| !report.is_empty())
+        {
+            sections.push(format!("### RustOwl\n\n> **RustOwl report** · {report}"));
+        }
+
+        let mut seen_kinds = HashSet::from([primary.kind.as_str()]);
+        let mut also_here = Vec::new();
+        for decoration in matching.iter().skip(1) {
+            if !seen_kinds.insert(decoration.kind.as_str()) {
+                continue;
             }
+            let Some(presentation) = decoration_presentation(&decoration.kind) else {
+                continue;
+            };
+            let detail = decoration
+                .hover_text
+                .as_deref()
+                .filter(|report| !report.is_empty())
+                .unwrap_or(presentation.summary);
+            also_here.push(format!("- **{}** · {detail}", presentation.title));
+        }
+        if !also_here.is_empty() {
+            sections.push(format!("#### Also active here\n\n{}", also_here.join("\n")));
         }
     }
 
-    let status_text = status
-        .and_then(Value::as_str)
-        .map(|status| format!("Analysis status: `{status}`"));
-    if messages.is_empty() && status_text.is_none() {
-        return Value::Null;
-    }
-    if let Some(status) = status_text {
-        messages.push(status);
-    }
-    let markdown = format!("**RustOwl**\n\n{}", messages.join("\n\n"));
+    sections.push(analysis_markdown(status, is_analyzed));
+    let markdown = sections.join("\n\n---\n\n");
     let mut result = Map::from_iter([(
         "contents".into(),
         json!({"kind": "markdown", "value": markdown}),
     )]);
-    if let Some(range) = hover_range {
-        result.insert("range".into(), serde_json::to_value(range).unwrap());
+    if let Some(primary) = matching.first() {
+        result.insert("range".into(), serde_json::to_value(primary.range).unwrap());
     }
     Value::Object(result)
+}
+
+fn analysis_markdown(status: Option<&Value>, is_analyzed: bool) -> String {
+    if !is_analyzed {
+        return "**Analysis** · Waiting for a saved result — save this file to run RustOwl.".into();
+    }
+    match status.and_then(Value::as_str) {
+        Some("finished") => "**Analysis** · Complete".into(),
+        Some("analyzing") => {
+            "**Analysis** · Updating — ownership ranges may change shortly.".into()
+        }
+        Some("error") => "**Analysis** · Error — check the RustOwl language-server output.".into(),
+        Some(status) => format!("**Analysis** · `{status}`"),
+        None => "**Analysis** · Result available".into(),
+    }
 }
 
 async fn request_visual_refresh<C>(state: &mut State, client: &mut C) -> Result<()>
@@ -526,7 +566,9 @@ fn id_key(id: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{TOKEN_TYPES, augment_initialize_response};
+    use super::{
+        Decoration, Position, Range, TOKEN_TYPES, augment_initialize_response, hover_result,
+    };
 
     #[test]
     fn advertises_adapter_capabilities() {
@@ -541,6 +583,85 @@ mod tests {
         assert_eq!(
             message["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"],
             json!(TOKEN_TYPES)
+        );
+    }
+
+    #[test]
+    fn builds_an_educational_native_markdown_hover() {
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 19,
+            },
+            end: Position {
+                line: 2,
+                character: 27,
+            },
+        };
+        let decorations = vec![
+            Decoration {
+                kind: "lifetime".into(),
+                range,
+                hover_text: Some("lifetime of variable `message`".into()),
+                overlapped: false,
+            },
+            Decoration {
+                kind: "imm_borrow".into(),
+                range,
+                hover_text: Some("immutable borrow".into()),
+                overlapped: false,
+            },
+        ];
+
+        let hover = hover_result(
+            Position {
+                line: 2,
+                character: 21,
+            },
+            &decorations,
+            Some(&json!("finished")),
+            true,
+        );
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.starts_with("### RustOwl · Shared borrow"));
+        assert!(markdown.contains("**Ownership** · the source keeps the value"));
+        assert!(markdown.contains("> **RustOwl report** · immutable borrow"));
+        assert!(markdown.contains("#### Also active here"));
+        assert!(markdown.contains("**Lifetime region**"));
+        assert!(markdown.ends_with("**Analysis** · Complete"));
+        assert_eq!(hover["range"], json!(range));
+    }
+
+    #[test]
+    fn suppresses_status_only_hover_after_analysis_finishes() {
+        let hover = hover_result(
+            Position {
+                line: 0,
+                character: 0,
+            },
+            &[],
+            Some(&json!("finished")),
+            true,
+        );
+        assert!(hover.is_null());
+    }
+
+    #[test]
+    fn explains_when_a_file_has_not_been_analyzed() {
+        let hover = hover_result(
+            Position {
+                line: 0,
+                character: 0,
+            },
+            &[],
+            Some(&json!("finished")),
+            false,
+        );
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("save this file to run RustOwl")
         );
     }
 }
