@@ -19,6 +19,7 @@ moving revision in a production build.
 | [OwnSight](https://github.com/dedsecrattle/OwnSight) | `98c3c788dfdc859d4a2c5d199e6087a9c816e672` | Teaching/debug modes, ownership questions, event and timeline vocabulary | Cargo metadata says `MIT OR Apache-2.0`, but no root license text is present. Treat as study-only until provenance is clarified. |
 | [mind-expander](https://github.com/mbbill/mind-expander) | `1182586b80be4747284c69b2dcff27a9a79b551c` | Source-backed infinite canvas, agent-guided tours, architecture and change overlays | Apache-2.0; keep attribution and separate its structural graph from compiler ownership evidence. |
 | [rust-analyzer](https://github.com/rust-lang/rust-analyzer) | `513f60bfe6641ed48072862cf4c1821696e2630d` | Incremental project model, invalidation, symbol and call identities, editor performance patterns | MIT OR Apache-2.0; RustOwl complements rather than replaces Zed's native rust-analyzer. |
+| [HelixDB](https://github.com/HelixDB/helix-db) | `ce7392958f466d118328864d7e514e58ad01204f` | Embedded writer/read-only APIs, bounded local graph persistence, query ergonomics, durability and recovery behavior | Apache-2.0; an approved production dependency only through an explicit pinned Cargo dependency and release audit. The reference checkout itself is excluded from release artifacts. |
 
 The maintained RustOwl fork is already pinned separately at [`../engine`](../engine)
 because it is product source rather than a research-only reference.
@@ -39,6 +40,10 @@ Before graph schema version 1 is frozen:
    source-backed navigation principles.
 5. Verify that RustOwl and rust-analyzer responsibilities remain complementary
    and that neither server duplicates latency-sensitive editor work.
+6. Exercise HelixDB's embedded writer/read-only clients against the project-owned
+   revision contract, including atomic activation, crash recovery, bounded
+   queries, schema migration, and resource ceilings before enabling it by
+   default in release builds.
 
 Record conclusions as project-owned ADRs. Reference code never becomes product
 code through an undocumented copy or an implicit Cargo path dependency.

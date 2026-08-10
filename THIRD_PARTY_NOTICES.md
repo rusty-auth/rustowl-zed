@@ -32,3 +32,9 @@ archives. Their source remains governed solely by each upstream project's
 license. Projects without clear license text are study-only and their source
 must not be copied or adapted. Exact revisions and license boundaries are
 recorded in [`references/README.md`](references/README.md).
+
+HelixDB is additionally being evaluated as the embedded persistence engine for
+the ownership graph. HelixDB is licensed under Apache-2.0. If it is linked into
+a release, its license and required notices will ship with that release; the
+RustOwl graph schema, certainty model, revision protocol, privacy policy, and
+query limits remain project-owned contracts rather than HelixDB semantics.

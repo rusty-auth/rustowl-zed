@@ -42,3 +42,8 @@
 	url = https://github.com/rust-lang/rust-analyzer.git
 	branch = master
 	shallow = true
+[submodule "references/helix-db"]
+	path = references/helix-db
+	url = https://github.com/HelixDB/helix-db.git
+	branch = main
+	shallow = true
