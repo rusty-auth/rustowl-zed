@@ -91,10 +91,19 @@ jobs:
           Copy-Item THIRD_PARTY_NOTICES.md staging/
           Copy-Item engine/THIRD_PARTY_NOTICES.md staging/ENGINE_THIRD_PARTY_NOTICES.md
           Copy-Item runtime/manifest.json staging/
-          Get-ChildItem staging/* -File | Where-Object { $_.Name -ne "checksums.sha256" } | Sort-Object Name | ForEach-Object {
+          $checksumLines = Get-ChildItem staging/* -File | Where-Object { $_.Name -ne "checksums.sha256" } | Sort-Object Name | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$hash  $($_.Name)" | Add-Content staging/checksums.sha256
+            "$hash  $($_.Name)"
           }
+          # Keep checksum manifests portable across Windows, macOS, and Linux.
+          # Add-Content uses platform newlines, which makes the trailing CR part
+          # of each filename when shasum verifies the archive on Unix.
+          $checksumPath = Join-Path $PWD "staging/checksums.sha256"
+          [System.IO.File]::WriteAllText(
+            $checksumPath,
+            ($checksumLines -join "`n") + "`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
           Compress-Archive -Path staging/* -DestinationPath "rustowl-zed-runtime-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v7
         with:
