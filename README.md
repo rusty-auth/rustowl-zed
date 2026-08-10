@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/rustowl-hero.webp" alt="A heroic owl perched on the RustyAuth R above a mountain valley crossed by colourful RustOwl lifetime paths" width="100%">
+  <img src="assets/rustowl-hero.webp" alt="A heroic owl wearing the RustyAuth mark and perched on a stone ZED arch above a mountain valley crossed by colourful RustOwl lifetime paths" width="100%">
 </p>
 
 # RustOwl for Zed
