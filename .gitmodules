@@ -1,0 +1,4 @@
+[submodule "engine"]
+	path = engine
+	url = https://github.com/rusty-auth/rustowl-engine.git
+	branch = main
