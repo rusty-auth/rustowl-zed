@@ -1,0 +1,546 @@
+mod protocol;
+mod semantic;
+
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    path::Path,
+    process::Stdio,
+};
+
+use anyhow::{Context, Result, bail};
+use protocol::{read_message, write_message};
+use semantic::{
+    CursorResponse, Decoration, Position, Range, TOKEN_TYPES, contains, inlay_hints,
+    position_for_rustowl, range_for_lsp, semantic_tokens,
+};
+use serde_json::{Map, Value, json};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader, BufWriter},
+    process::Command,
+    sync::mpsc,
+};
+
+#[derive(Debug)]
+enum Event {
+    Client(Value),
+    Server(Value),
+    ClientClosed,
+    ServerClosed,
+    ReadError(&'static str, anyhow::Error),
+}
+
+#[derive(Debug)]
+struct PendingCursor {
+    client_id: Value,
+    uri: String,
+    position: Position,
+}
+
+#[derive(Default)]
+struct State {
+    next_internal_id: u64,
+    initialize_ids: HashSet<String>,
+    internal_server_ids: HashSet<String>,
+    internal_client_ids: HashSet<String>,
+    pending_cursors: HashMap<String, PendingCursor>,
+    decorations: HashMap<String, Vec<Decoration>>,
+}
+
+impl State {
+    fn internal_id(&mut self, purpose: &str) -> Value {
+        self.next_internal_id += 1;
+        Value::String(format!("rustowl-zed/{purpose}/{}", self.next_internal_id))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let rustowl = env::var("RUSTOWL_BINARY").unwrap_or_else(|_| "rustowl".into());
+    ensure_rustowl_toolchain(&rustowl).await?;
+    let mut child = Command::new(&rustowl)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to start RustOwl at {rustowl:?}"))?;
+
+    let child_stdin = child
+        .stdin
+        .take()
+        .context("RustOwl stdin was unavailable")?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .context("RustOwl stdout was unavailable")?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .context("RustOwl stderr was unavailable")?;
+
+    let (events_tx, mut events_rx) = mpsc::channel(64);
+    spawn_reader(BufReader::new(tokio::io::stdin()), events_tx.clone(), true);
+    spawn_reader(BufReader::new(child_stdout), events_tx.clone(), false);
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(child_stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("[rustowl] {line}");
+        }
+    });
+
+    let mut client_writer = BufWriter::new(tokio::io::stdout());
+    let mut server_writer = BufWriter::new(child_stdin);
+    let mut state = State::default();
+
+    while let Some(event) = events_rx.recv().await {
+        match event {
+            Event::Client(message) => {
+                handle_client_message(message, &mut state, &mut client_writer, &mut server_writer)
+                    .await?;
+            }
+            Event::Server(message) => {
+                handle_server_message(message, &mut state, &mut client_writer, &mut server_writer)
+                    .await?;
+            }
+            Event::ClientClosed => break,
+            Event::ServerClosed => bail!("RustOwl stopped before the editor connection closed"),
+            Event::ReadError(endpoint, error) => {
+                return Err(error).with_context(|| format!("failed reading from {endpoint}"));
+            }
+        }
+    }
+
+    child.kill().await.ok();
+    Ok(())
+}
+
+async fn ensure_rustowl_toolchain(rustowl: &str) -> Result<()> {
+    if env::var("RUSTOWL_AUTO_SETUP").as_deref() != Ok("1") {
+        return Ok(());
+    }
+
+    let runtime_dir = Path::new(rustowl)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let ready_marker = runtime_dir.join(".rustowl-zed-toolchain-ready");
+    if ready_marker.is_file() {
+        return Ok(());
+    }
+
+    if toolchain_looks_complete(runtime_dir) {
+        std::fs::write(&ready_marker, b"ready\n")
+            .context("failed to record the RustOwl toolchain setup")?;
+        return Ok(());
+    }
+
+    eprintln!("[rustowl-zed] installing RustOwl's required Rust toolchain (first run only)");
+    let status = Command::new(rustowl)
+        .args(["toolchain", "install", "--path"])
+        .arg(runtime_dir)
+        .arg("--skip-rustowl-toolchain")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| format!("failed to start RustOwl toolchain setup at {rustowl:?}"))?;
+
+    if !status.success() || !toolchain_looks_complete(runtime_dir) {
+        bail!(
+            "RustOwl toolchain setup failed; run `{rustowl} toolchain install --path {} --skip-rustowl-toolchain`",
+            runtime_dir.display()
+        );
+    }
+    std::fs::write(&ready_marker, b"ready\n")
+        .context("failed to record the RustOwl toolchain setup")?;
+
+    Ok(())
+}
+
+fn toolchain_looks_complete(runtime_dir: &Path) -> bool {
+    let cargo = if cfg!(windows) { "cargo.exe" } else { "cargo" };
+    let rustc = if cfg!(windows) { "rustc.exe" } else { "rustc" };
+    std::fs::read_dir(runtime_dir.join("sysroot"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let root = entry.path();
+            root.join("bin").join(cargo).is_file()
+                && root.join("bin").join(rustc).is_file()
+                && root.join("lib").join("rustlib").is_dir()
+        })
+}
+
+fn spawn_reader<R>(mut reader: R, sender: mpsc::Sender<Event>, client: bool)
+where
+    R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match read_message(&mut reader).await {
+                Ok(Some(message)) => {
+                    let event = if client {
+                        Event::Client(message)
+                    } else {
+                        Event::Server(message)
+                    };
+                    if sender.send(event).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => {
+                    let event = if client {
+                        Event::ClientClosed
+                    } else {
+                        Event::ServerClosed
+                    };
+                    sender.send(event).await.ok();
+                    return;
+                }
+                Err(error) => {
+                    let endpoint = if client { "Zed" } else { "RustOwl" };
+                    sender.send(Event::ReadError(endpoint, error)).await.ok();
+                    return;
+                }
+            }
+        }
+    });
+}
+
+async fn handle_client_message<C, S>(
+    message: Value,
+    state: &mut State,
+    client: &mut C,
+    server: &mut S,
+) -> Result<()>
+where
+    C: tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    if let Some(id) = message.get("id") {
+        let key = id_key(id);
+        if state.internal_client_ids.remove(&key) && message.get("method").is_none() {
+            return Ok(());
+        }
+    }
+
+    match message.get("method").and_then(Value::as_str) {
+        Some("initialize") => {
+            if let Some(id) = message.get("id") {
+                state.initialize_ids.insert(id_key(id));
+            }
+            write_message(server, &message).await
+        }
+        Some("textDocument/hover") => {
+            let client_id = message
+                .get("id")
+                .cloned()
+                .context("hover request had no id")?;
+            let uri = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+                .context("hover request had no document URI")?
+                .to_owned();
+            let position: Position = serde_json::from_value(
+                message
+                    .pointer("/params/position")
+                    .cloned()
+                    .context("hover request had no position")?,
+            )?;
+            let cursor_id = state.internal_id("cursor");
+            state.pending_cursors.insert(
+                id_key(&cursor_id),
+                PendingCursor {
+                    client_id,
+                    uri: uri.clone(),
+                    position,
+                },
+            );
+            let rustowl_position = position_for_rustowl(&uri, position);
+            write_message(
+                server,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": cursor_id,
+                    "method": "rustowl/cursor",
+                    "params": {
+                        "position": rustowl_position,
+                        "document": { "uri": uri }
+                    }
+                }),
+            )
+            .await
+        }
+        Some("textDocument/semanticTokens/full") => {
+            let id = message
+                .get("id")
+                .cloned()
+                .context("semantic token request had no id")?;
+            let uri = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+                .context("semantic token request had no document URI")?;
+            let data = semantic_tokens(
+                uri,
+                state.decorations.get(uri).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            write_message(
+                client,
+                &json!({"jsonrpc": "2.0", "id": id, "result": {"data": data}}),
+            )
+            .await
+        }
+        Some("textDocument/inlayHint") => {
+            let id = message
+                .get("id")
+                .cloned()
+                .context("inlay hint request had no id")?;
+            let uri = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+                .context("inlay hint request had no document URI")?;
+            let requested_range: Range = serde_json::from_value(
+                message
+                    .pointer("/params/range")
+                    .cloned()
+                    .context("inlay hint request had no range")?,
+            )?;
+            let hints = inlay_hints(
+                requested_range,
+                state.decorations.get(uri).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            write_message(
+                client,
+                &json!({"jsonrpc": "2.0", "id": id, "result": hints}),
+            )
+            .await
+        }
+        Some("textDocument/didSave") => {
+            write_message(server, &message).await?;
+            let id = state.internal_id("analyze");
+            state.internal_server_ids.insert(id_key(&id));
+            write_message(
+                server,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "rustowl/analyze",
+                    "params": {}
+                }),
+            )
+            .await
+        }
+        Some("textDocument/didChange") => {
+            if let Some(uri) = message
+                .pointer("/params/textDocument/uri")
+                .and_then(Value::as_str)
+            {
+                state.decorations.remove(uri);
+                request_visual_refresh(state, client).await?;
+            }
+            write_message(server, &message).await
+        }
+        _ => write_message(server, &message).await,
+    }
+}
+
+async fn handle_server_message<C, S>(
+    mut message: Value,
+    state: &mut State,
+    client: &mut C,
+    _server: &mut S,
+) -> Result<()>
+where
+    C: tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let Some(id) = message.get("id").cloned() else {
+        return write_message(client, &message).await;
+    };
+    let key = id_key(&id);
+
+    if state.internal_server_ids.remove(&key) {
+        return Ok(());
+    }
+    if let Some(pending) = state.pending_cursors.remove(&key) {
+        return handle_cursor_response(message, pending, state, client).await;
+    }
+    if state.initialize_ids.remove(&key) {
+        augment_initialize_response(&mut message);
+    }
+    write_message(client, &message).await
+}
+
+async fn handle_cursor_response<C>(
+    message: Value,
+    pending: PendingCursor,
+    state: &mut State,
+    client: &mut C,
+) -> Result<()>
+where
+    C: tokio::io::AsyncWrite + Unpin,
+{
+    if let Some(error) = message.get("error") {
+        return write_message(
+            client,
+            &json!({"jsonrpc": "2.0", "id": pending.client_id, "error": error}),
+        )
+        .await;
+    }
+
+    let response: CursorResponse = serde_json::from_value(
+        message
+            .get("result")
+            .cloned()
+            .context("RustOwl cursor response had no result")?,
+    )?;
+    let lsp_decorations: Vec<_> = response
+        .decorations
+        .into_iter()
+        .map(|mut decoration| {
+            decoration.range = range_for_lsp(&pending.uri, decoration.range);
+            decoration
+        })
+        .collect();
+
+    let hover = hover_result(
+        &pending.uri,
+        pending.position,
+        &lsp_decorations,
+        response.status.as_ref(),
+    );
+    state
+        .decorations
+        .insert(pending.uri.clone(), lsp_decorations);
+    write_message(
+        client,
+        &json!({"jsonrpc": "2.0", "id": pending.client_id, "result": hover}),
+    )
+    .await?;
+    request_visual_refresh(state, client).await
+}
+
+fn hover_result(
+    _uri: &str,
+    position: Position,
+    decorations: &[Decoration],
+    status: Option<&Value>,
+) -> Value {
+    let mut messages = Vec::new();
+    let mut seen = HashSet::new();
+    let mut hover_range = None;
+    for decoration in decorations {
+        if contains(decoration.range, position) {
+            hover_range.get_or_insert(decoration.range);
+            if decoration.kind != "lifetime"
+                && let Some(text) = decoration.hover_text.as_deref()
+                && !text.is_empty()
+                && seen.insert(text.to_owned())
+            {
+                messages.push(text.to_owned());
+            }
+        }
+    }
+
+    let status_text = status
+        .and_then(Value::as_str)
+        .map(|status| format!("Analysis status: `{status}`"));
+    if messages.is_empty() && status_text.is_none() {
+        return Value::Null;
+    }
+    if let Some(status) = status_text {
+        messages.push(status);
+    }
+    let markdown = format!("**RustOwl**\n\n{}", messages.join("\n\n"));
+    let mut result = Map::from_iter([(
+        "contents".into(),
+        json!({"kind": "markdown", "value": markdown}),
+    )]);
+    if let Some(range) = hover_range {
+        result.insert("range".into(), serde_json::to_value(range).unwrap());
+    }
+    Value::Object(result)
+}
+
+async fn request_visual_refresh<C>(state: &mut State, client: &mut C) -> Result<()>
+where
+    C: tokio::io::AsyncWrite + Unpin,
+{
+    let semantic_id = state.internal_id("semantic-refresh");
+    state.internal_client_ids.insert(id_key(&semantic_id));
+    write_message(
+        client,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": semantic_id,
+            "method": "workspace/semanticTokens/refresh",
+            "params": null
+        }),
+    )
+    .await?;
+
+    let inlay_id = state.internal_id("inlay-refresh");
+    state.internal_client_ids.insert(id_key(&inlay_id));
+    write_message(
+        client,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": inlay_id,
+            "method": "workspace/inlayHint/refresh",
+            "params": null
+        }),
+    )
+    .await
+}
+
+fn augment_initialize_response(message: &mut Value) {
+    let Some(capabilities) = message
+        .pointer_mut("/result/capabilities")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    capabilities.insert("hoverProvider".into(), Value::Bool(true));
+    capabilities.insert("inlayHintProvider".into(), Value::Bool(true));
+    capabilities.insert("positionEncoding".into(), Value::String("utf-16".into()));
+    capabilities.insert(
+        "semanticTokensProvider".into(),
+        json!({
+            "legend": {
+                "tokenTypes": TOKEN_TYPES,
+                "tokenModifiers": []
+            },
+            "full": true,
+            "range": false
+        }),
+    );
+}
+
+fn id_key(id: &Value) -> String {
+    serde_json::to_string(id).unwrap_or_else(|_| "null".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{TOKEN_TYPES, augment_initialize_response};
+
+    #[test]
+    fn advertises_adapter_capabilities() {
+        let mut message = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"capabilities": {"textDocumentSync": 1}}
+        });
+        augment_initialize_response(&mut message);
+        assert_eq!(message["result"]["capabilities"]["hoverProvider"], true);
+        assert_eq!(message["result"]["capabilities"]["inlayHintProvider"], true);
+        assert_eq!(
+            message["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"],
+            json!(TOKEN_TYPES)
+        );
+    }
+}

@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build adapter
+        run: >-
+          cargo build --locked --release --manifest-path adapter/Cargo.toml
+          --target ${{ matrix.target }}
+      - name: Package adapter (Unix)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          mkdir staging
+          cp "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter" staging/
+          tar -C staging -czf "rustowl-zed-adapter-${{ matrix.target }}.tar.gz" rustowl-zed-adapter
+      - name: Package adapter (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory staging
+          Copy-Item "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter.exe" staging/
+          Compress-Archive -Path staging/rustowl-zed-adapter.exe -DestinationPath "rustowl-zed-adapter-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustowl-zed-adapter-${{ matrix.target }}
+          path: rustowl-zed-adapter-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}" artifacts/*
+          --repo "${GITHUB_REPOSITORY}"
+          --generate-notes
+          --verify-tag
