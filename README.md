@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/rustowl-hero.webp" alt="A heroic owl perched on the RustyAuth R above a mountain valley crossed by colourful RustOwl lifetime paths" width="100%">
+</p>
+
 # RustOwl for Zed
 
 An unofficial Zed client for
