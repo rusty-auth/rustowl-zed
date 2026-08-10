@@ -10,12 +10,15 @@ The canonical publishing requirements are in Zed's
 guide. Before opening the registry pull request:
 
 1. Merge a clean commit to this repository's public default branch.
-2. Tag the same version as `extension.toml` (`v0.1.3` for this candidate).
-3. Wait for the release workflow to publish all six
+2. Run the Release workflow manually from that commit. This exercises the full
+   six-platform build and packaging matrix but deliberately skips publication.
+3. Inspect the six retained workflow artifacts, then tag the same version as
+   `extension.toml` (`v0.1.3` for this candidate).
+4. Wait for the tagged release workflow to publish all six
    `rustowl-zed-runtime-<target>` archives.
-4. Verify each archive contains four binaries, the compatibility manifest,
+5. Verify each archive contains four binaries, the compatibility manifest,
    CycloneDX SBOM, checksums, licenses, and notices.
-5. Perform clean-install LSP and MCP smoke tests from the published archive.
+6. Perform clean-install LSP and MCP smoke tests from the published archive.
 
 Zed publishes community extensions from
 [`zed-industries/extensions`](https://github.com/zed-industries/extensions).
