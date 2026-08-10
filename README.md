@@ -32,19 +32,19 @@ semantic-token underlines, and inlay hints. Exact colours follow your Zed theme.
 
 **Immutable borrowing**
 
-<a href="assets/showcase/borrow.webp"><img src="assets/showcase/borrow.webp" width="100%" alt="Zed editor showing an immutable Rust borrow with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+<a href="assets/showcase/zed-borrow.webp"><img src="assets/showcase/zed-borrow.webp" width="100%" alt="Zed editor showing an immutable Rust borrow with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
 
 **Ownership moves**
 
-<a href="assets/showcase/move.webp"><img src="assets/showcase/move.webp" width="100%" alt="Zed editor showing Rust ownership moving into a function call with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
+<a href="assets/showcase/zed-move.webp"><img src="assets/showcase/zed-move.webp" width="100%" alt="Zed editor showing Rust ownership moving into a function call with RustOwl semantic underlines, an inlay hint, and a native hover popover"></a>
 
 **Conflicting borrows**
 
-<a href="assets/showcase/conflict.webp"><img src="assets/showcase/conflict.webp" width="100%" alt="Zed editor showing overlapping mutable and immutable Rust borrows with RustOwl semantic underlines, inlay hints, and a native hover popover"></a>
+<a href="assets/showcase/zed-conflict.webp"><img src="assets/showcase/zed-conflict.webp" width="100%" alt="Zed editor showing overlapping mutable and immutable Rust borrows with RustOwl semantic underlines, inlay hints, and a native hover popover"></a>
 
 **Lifetime relationships**
 
-<a href="assets/showcase/lifetime.webp"><img src="assets/showcase/lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with RustOwl semantic underlines and a native hover popover"></a>
+<a href="assets/showcase/zed-lifetime.webp"><img src="assets/showcase/zed-lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with RustOwl semantic underlines and a native hover popover"></a>
 
 ## Install
 
