@@ -34,7 +34,7 @@ jobs:
             archive: zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
       - name: Build adapter
@@ -55,7 +55,7 @@ jobs:
           New-Item -ItemType Directory staging
           Copy-Item "adapter/target/${{ matrix.target }}/release/rustowl-zed-adapter.exe" staging/
           Compress-Archive -Path staging/rustowl-zed-adapter.exe -DestinationPath "rustowl-zed-adapter-${{ matrix.target }}.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rustowl-zed-adapter-${{ matrix.target }}
           path: rustowl-zed-adapter-${{ matrix.target }}.*
@@ -65,7 +65,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
