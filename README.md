@@ -4,17 +4,34 @@
 
 # RustOwl for Zed
 
-**A compiler-grounded ownership cockpit for Rust, built for Zed developers and
-coding agents.**
+<p align="center">
+  <strong>See what Rust's borrow checker sees.</strong><br>
+  Compiler-grounded ownership intelligence for developers and coding agents.
+</p>
 
-RustOwl for Zed makes Rust's normally invisible ownership story visible. It
-renders lifetime, borrow, move, mutation, call, return, drop, liveness, and
-async-suspension evidence as native Zed underlines, inline helpers, and layered
-hovers. The same local, revisioned workspace graph powers bounded ownership
-traces, Mermaid flow maps, and six read-only tools for Zed's Agent Panel.
+Rust gives developers memory safety without a garbage collector, but the
+ownership decisions that make it possible are normally invisible. You are
+left reconstructing moves, borrows, permissions, lifetimes, drops, and async
+suspension state in your head.
 
-It is an independent Zed integration built with care by
-[RustyAuth](https://rustyauth.dev).
+**RustOwl turns that hidden compiler model into a live ownership cockpit inside
+Zed.** It explains what happened beside the code, reveals why it happened on
+hover, traces where the value came from and where it goes next, and gives
+coding agents access to the same revisioned evidence.
+
+> **Stop guessing where ownership went. See the move, the borrow, the lifetime,
+> and the consequence where they happen.**
+
+[See it in Zed](#see-it-in-zed) ·
+[Explore the architecture](#architecture) ·
+[Give agents ownership context](#give-zeds-agent-panel-compiler-context) ·
+[Install locally](#install-in-zed) ·
+[Read the roadmap](docs/ownership-cockpit-roadmap.md)
+
+This is an independent Zed integration built by
+[RustyAuth](https://rustyauth.dev). It combines a maintained RustOwl compiler
+engine, a Zed-native LSP adapter, a persistent workspace graph powered by
+embedded HelixDB, and a read-only MCP interface for agentic tooling.
 
 > [!IMPORTANT]
 > [RustOwl](https://github.com/cordx56/rustowl) was created by
@@ -24,59 +41,131 @@ It is an independent Zed integration built with care by
 > maintained engine fork preserves the original history, attribution, and
 > MPL-2.0 licence.
 
-## Status
+## Rust's superpower should not be invisible
+
+The Rust compiler already understands the questions that consume so much
+debugging time:
+
+- Why can I not mutate this value yet?
+- Where did ownership leave this scope?
+- Which reference keeps this allocation alive?
+- What is stored inside this future across `.await`?
+- Which call in a six-function chain moved, reborrowed, returned, or dropped
+  the value?
+- Is this fact compiler-proven, path-dependent, stale, or outside the current
+  analysis boundary?
+
+RustOwl brings those answers into the editing loop. The fast path stays quiet:
+compact inline signals show what matters. Hovering opens a progressive
+explanation, from an approachable consequence to exact MIR provenance. When a
+single location is not enough, the same evidence becomes a navigable workspace
+graph or a bounded Mermaid flow.
+
+## One compiler truth. Three audiences.
+
+| If you are… | RustOwl gives you… |
+| --- | --- |
+| **Learning Rust** | Plain-language answers to “who owns this?”, “who may read or write it?”, and “when does the borrow end?” without replacing the real compiler model with a metaphor. |
+| **Shipping production Rust** | Exact MIR-grounded evidence, certainty, source locations, interprocedural flow, async suspension context, and compact provenance for difficult investigations. |
+| **Pairing with a coding agent** | Read-only access to the same fresh workspace revision through MCP, so the agent can inspect ownership facts instead of inferring them from syntax alone. |
+
+The learner and the senior engineer do not need separate tools. They need
+**progressive disclosure over the same truth**: consequence first, compiler
+evidence when requested, and a deeper graph when the local answer is not
+enough.
+
+## One ownership model. Four connected surfaces.
+
+| Surface | Experience |
+| --- | --- |
+| **Inline HUD** | Quiet move, borrow, mutation, liveness, drop, and async hints beside the relevant code. |
+| **Native hover** | A human explanation first, followed by certainty, source-level flow, exact compiler evidence, and MIR provenance. |
+| **Workspace cockpit** | Whole-workspace call chains, ownership flows, async state, Mermaid diagrams, and eventually opt-in runtime overlays. |
+| **Agent context** | The same revisioned, bounded evidence through six MCP tools and three task-focused prompts. |
+
+This is not four separate interpretations. The editor, graph, diagrams, and
+agent tools all read from the same versioned evidence model. Mermaid and
+Markdown are renderers, never the source of semantic truth.
+
+## More than another tooltip
+
+RustOwl is deliberately complementary to `rust-analyzer`:
+
+- **`rust-analyzer` tells you what the code is. RustOwl explains what ownership
+  is doing.**
+- **Compiler facts, not syntax guesses.** Moves, borrows, liveness, drops, and
+  control-flow events originate in rustc/MIR analysis.
+- **A graph, not a pile of annotations.** Local events connect into
+  cross-function ownership and async paths.
+- **One context for humans and agents.** An agent can query the same revision
+  and evidence boundary visible in the editor.
+- **Local-first by design.** Static ownership evidence is stored in an embedded
+  HelixDB graph; no cloud index or database daemon is required.
+- **Honest uncertainty.** Compiler-proven, derived, conservative, unavailable,
+  and stale evidence remain visibly distinct.
+
+RustOwl does not replace or fork Zed's native Rust language server. It runs
+beside `rust-analyzer`, adding the ownership-intelligence layer the language
+server was not designed to expose.
+
+## A development cockpit, not just diagnostics
+
+Traditional diagnostics answer after something has gone wrong. RustOwl is
+designed to make ownership continuously legible while code is being written,
+reviewed, refactored, and debugged:
+
+- follow a value across calls, returns, reborrows, mutations, and drops;
+- inspect field projections and partial moves without flattening them into the
+  parent value;
+- understand what an async future retains at each suspension point;
+- expose cancellation and drop boundaries that are easy to miss in async code;
+- render a bounded ownership or memory-state diagram from compiler evidence;
+- preserve the exact source span, certainty, graph revision, and provenance
+  behind every explanation; and
+- let an agent answer ownership questions against indexed evidence rather than
+  a probabilistic reading of the source.
+
+That shared evidence layer is the foundation for a deeper Rust engineering
+cockpit: source-local guidance when the answer is small, visual flow when it is
+structural, and agent tools when the investigation crosses the workspace.
+
+## Verified release evidence
+
+The current `0.1.3` marketplace candidate is backed by executable gates rather
+than screenshots alone:
+
+| Gate | Verified result |
+| --- | --- |
+| **Live Zed Preview** | RustOwl underlines, inline hints, and layered hovers run beside `rust-analyzer` in a real editor session. |
+| **Native release matrix** | Checksummed runtimes build for macOS, Windows, and Linux on ARM64 and x86_64. |
+| **Exact-artifact clean install** | The macOS ARM64 CI archive produced 25 ownership underlines, 4 rich hints, 6 MCP tools, 3 prompts, and a fresh persisted revision in the smoke fixture. |
+| **Supply-chain verification** | Archive contents, manifests, checksums, SBOMs, licences, and binary formats are checked before publication. |
+| **Evidence integrity** | Hover and agent responses carry revision, source digest, schema, document version, freshness, certainty, and analysis-boundary metadata. |
+
+See the successful
+[main CI run](https://github.com/rusty-auth/rustowl-zed/actions/runs/31432087730)
+and
+[six-target release verification](https://github.com/rusty-auth/rustowl-zed/actions/runs/31432113493).
+
+## Release candidate status
 
 RustOwl for Zed `0.1.3` is a marketplace candidate under active hardening. The
-extension, indexed compiler engine, embedded HelixDB store, and MCP server are
-implemented and have been exercised together in Zed Preview on macOS ARM64
-with rust-analyzer running alongside RustOwl.
+extension, indexed compiler engine, embedded HelixDB store, and MCP server have
+been exercised together in Zed Preview on macOS ARM64 with `rust-analyzer`
+running alongside RustOwl.
 
-The release workflow builds and automatically verifies one checksummed runtime
-for all six declared macOS, Linux, and Windows targets. The six-platform package
-matrix and a clean-install macOS ARM64 LSP/MCP smoke pass; cross-platform visual
-checks and the tagged release remain gates before submission to the Zed
-Extension Marketplace. Optional runtime-value capture remains a deliberately
-separate future capability; this release exposes static compiler evidence and
-never claims to have observed program execution.
+The repository is not yet claiming public marketplace publication.
+Cross-platform visual, stress, and performance checks plus the tagged release
+remain gates before submission. Optional runtime-value capture remains a
+deliberately separate future capability: this release exposes static compiler
+evidence and never claims to have observed program execution.
 
 - [Production roadmap](docs/ownership-cockpit-roadmap.md)
 - [Engine architecture](docs/engine-architecture.md)
 - [Marketplace release checklist](docs/marketplace-submission.md)
 - [Maintained RustOwl engine fork](https://github.com/rusty-auth/rustowl-engine)
 
-## Why this exists
-
-rust-analyzer is the editor authority for symbols, types, navigation,
-completion, and ordinary diagnostics. RustOwl adds a different layer:
-rustc/MIR/borrow-checker evidence explaining when a value is live, borrowed,
-moved, mutated, returned, dropped, or retained across an asynchronous
-suspension point.
-
-The product thesis is simple:
-
-> rust-analyzer explains the program's symbols; RustOwl explains the program's
-> ownership story.
-
-RustOwl for Zed will continue to run beside Zed's native Rust language server;
-it does not replace or fork rust-analyzer.
-
-## The ownership cockpit
-
-The project has four connected product surfaces:
-
-| Surface | Experience |
-| --- | --- |
-| **Inline HUD** | One high-signal ownership helper per visible line, backed by complete semantic ranges and underlines. |
-| **Native hover** | A plain-English consequence first, followed by source-level flow and expandable compiler/MIR evidence. |
-| **Workspace cockpit** | Bounded structured and Mermaid views for values, functions, calls, async state, and conflicts. |
-| **Agent context** | Bounded, read-only MCP tools and prompts available to enabled Zed Agent Profiles. |
-
-All four surfaces consume the same versioned graph facts. Mermaid and Markdown
-are renderers; neither is the source of semantic truth. Source names such as
-`message` and `borrowed` are shown in the teaching layer; rustc temporaries
-such as `_28` remain available only as advanced provenance.
-
-## What the current client looks like
+## See it in Zed
 
 These are faithful previews of the current adapter output: ownership
 explanations in Zed's native LSP hover popover, semantic-token underlines, and
@@ -111,9 +200,9 @@ unresolved, the hover says so instead of presenting a guess as a Rust error.
 
 <a href="assets/showcase/zed-rich-lifetime.webp"><img src="assets/showcase/zed-rich-lifetime.webp" width="100%" alt="Zed editor showing a named Rust lifetime with semantic underlines and a native RustOwl hover explaining definitely-live and lifetime-region states"></a>
 
-## Full project scope
+## Inside the ownership-intelligence platform
 
-### A revisioned Cargo-workspace ownership graph
+### A temporal ownership graph for the whole Cargo workspace
 
 The maintained engine converts cursor-oriented RustOwl reports and MIR into a
 deterministic graph covering analyzed crates, modules, files, functions,
@@ -126,7 +215,7 @@ identify the revision and source fingerprint they came from. The previous
 complete revision remains available while new compiler work runs; cancelled
 or incomplete analysis is never activated.
 
-The graph will trace:
+The graph contract connects:
 
 - direct calls, receivers, arguments, parameters, and returned places;
 - field projections and partial moves;
@@ -144,7 +233,7 @@ validated in the inactive slot, an atomic pointer activates it, and the other
 slot remains available for rollback. Users do not need Docker, a database
 daemon, a cloud account, or a Helix service.
 
-### Cross-function and async explanations
+### Follow ownership across functions and async state
 
 The cockpit and agent tools answer questions that a single-line tooltip cannot:
 
@@ -160,11 +249,11 @@ Cross-function fidelity is delivered in tested levels. A graph query stops at
 an unresolved boundary unless conservative expansion is explicitly requested.
 Storage or rendering is never allowed to invent a missing ownership edge.
 
-### Workspace cockpit and diagrams
+### Turn compiler evidence into visual flow
 
-Until Zed exposes custom extension panes, cockpit queries return bounded
-structured graph slices and Mermaid source that can be rendered beside the
-source or directly in an agent response. Current graph views cover:
+When a local hover is too small for the question, cockpit queries turn the same
+compiler evidence into bounded graph slices and Mermaid maps. Current graph
+views cover:
 
 - selected-value ownership flow;
 - function memory and ownership state machines;
@@ -174,9 +263,29 @@ source or directly in an agent response. Current graph views cover:
 - workspace ownership summaries; and
 - source-backed, agent-guided ownership tours.
 
-RustOwl does not write generated cockpit files into the tracked source tree.
+A compact trace can turn an invisible non-lexical lifetime into a map a human
+or agent can reason about:
 
-### Zed Agent Panel access through MCP
+```mermaid
+flowchart LR
+    OWN["message owns String"]
+    BORROW["borrowed reads &String"]
+    LAST["last shared use"]
+    MUTATE["message.push(...) may mutate"]
+    DROP["String drops at scope end"]
+
+    OWN -->|"shared borrow"| BORROW
+    BORROW -->|"println!"| LAST
+    LAST -->|"borrow ends"| MUTATE
+    MUTATE -->|"scope exits"| DROP
+```
+
+RustOwl does not write generated cockpit files into the tracked source tree.
+Until Zed exposes custom extension panes, these views can be rendered beside
+the source or directly inside an agent response rather than on a bespoke,
+always-on canvas.
+
+### Give Zed's Agent Panel compiler context
 
 The extension registers the local `rustowl-ownership` stdio context server
 alongside its language server. The managed runtime supplies `rustowl-mcp`,
@@ -202,12 +311,26 @@ async-state analysis, and ownership-preserving refactors:
 `debug-rust-ownership`, `explain-rust-async-state`, and
 `plan-rust-ownership-refactor`.
 
+With those tools enabled, an agent can answer questions such as:
+
+- “Trace this token from construction through every borrow, call, and drop.”
+- “Show what this future retains across each `.await` and where cancellation
+  releases it.”
+- “Render the smallest ownership diagram that explains this conflict.”
+- “Plan a borrowed-to-owned API refactor and identify the affected callers.”
+- “Separate the compiler-proven path from unresolved dispatch or unsafe
+  boundaries.”
+
+The result is a materially better pairing loop: the model can cite exact spans,
+graph nodes, certainty, and revision freshness instead of producing a plausible
+ownership narrative from source text alone.
+
 Agent responses are bounded and include exact workspace-relative spans,
 freshness, compiler and engine versions, certainty, truncation, and omitted
 counts. No agent tool can write the graph, launch compiler work, edit source,
 or execute the user's program.
 
-### Optional runtime evidence
+### Pair static ownership with opt-in runtime evidence
 
 Static ownership semantics and observed runtime execution are different kinds
 of truth. A later, explicitly opt-in lane will correlate compiler-assigned
@@ -224,7 +347,7 @@ This lane is intended to show which statically described calls, mutations,
 returns, drops, tasks, and suspension events were observed in one selected run.
 One run never proves that other possible paths are unreachable.
 
-## Truth and certainty
+## Compiler truth, without false certainty
 
 Every editor, diagram, and agent surface follows one shared truth contract:
 
@@ -243,7 +366,7 @@ revision, immediate invalidation of affected regions, and atomic replacement
 after save or a bounded idle debounce—not a full rustc-quality workspace build
 on every keystroke.
 
-## Target architecture
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -268,12 +391,12 @@ flowchart TB
     EVIDENCE -.-> ACTIVE
 ```
 
-Release archives will contain the adapter, RustOwl engine, compiler wrapper,
+Release archives contain the adapter, RustOwl engine, compiler wrapper,
 licences, notices, manifest, checksums, and software bill of materials. The
-same engine version will serve LSP and MCP modes so graph schema and protocol
+same engine version serves LSP and MCP modes so graph schema and protocol
 versions cannot drift.
 
-## Install
+## Install in Zed
 
 Once published, open Zed's Extensions view and search for **RustOwl**. During
 development, clone this repository and use **Install Dev Extension** from
