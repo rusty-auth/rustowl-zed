@@ -1,5 +1,9 @@
 # RustOwl engine architecture
 
+The production delivery sequence, acceptance gates, Zed Agent integration,
+and packaging plan are defined in the
+[`ownership cockpit roadmap`](ownership-cockpit-roadmap.md).
+
 The RustyAuth-maintained engine fork turns compiler-grounded RustOwl results
 into a reusable ownership graph for editor visuals, Mermaid diagrams, and
 agent tooling. It remains an MPL-2.0 project derived from
