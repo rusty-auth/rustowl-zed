@@ -22,8 +22,10 @@ coloured underlines and inline helper labels in Zed.
 ## Status
 
 The client is under active development ahead of its first Zed Extension
-Marketplace submission. The adapter and extension build in CI; hands-on Zed
-testing and upstream feedback are the remaining gates before submission.
+Marketplace submission. Version 0.1.2 has been tested end-to-end as a dev
+extension in Zed Preview 1.15.0 on macOS ARM64, including managed binary and
+toolchain installation, concurrent rust-analyzer support, semantic underlines,
+inlay hints, and native hover rendering.
 
 ## What it looks like
 

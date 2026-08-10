@@ -4,7 +4,7 @@ mod semantic;
 use std::{
     collections::{HashMap, HashSet},
     env,
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
 };
 
@@ -56,7 +56,8 @@ impl State {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let rustowl = env::var("RUSTOWL_BINARY").unwrap_or_else(|_| "rustowl".into());
+    let rustowl =
+        resolve_rustowl_binary(env::var("RUSTOWL_BINARY").unwrap_or_else(|_| "rustowl".into()));
     ensure_rustowl_toolchain(&rustowl).await?;
     let mut child = Command::new(&rustowl)
         .stdin(Stdio::piped())
@@ -112,6 +113,28 @@ async fn main() -> Result<()> {
 
     child.kill().await.ok();
     Ok(())
+}
+
+fn resolve_rustowl_binary(binary: String) -> String {
+    let Ok(adapter_executable) = env::current_exe() else {
+        return binary;
+    };
+    let Some(candidate) = sibling_installation_path(&adapter_executable, Path::new(&binary)) else {
+        return binary;
+    };
+    if candidate.is_file() {
+        candidate.to_string_lossy().into_owned()
+    } else {
+        binary
+    }
+}
+
+fn sibling_installation_path(adapter_executable: &Path, binary: &Path) -> Option<PathBuf> {
+    if binary.is_absolute() || binary.components().count() < 2 {
+        return None;
+    }
+    let extension_work_dir = adapter_executable.parent()?.parent()?;
+    Some(extension_work_dir.join(binary))
 }
 
 async fn ensure_rustowl_toolchain(rustowl: &str) -> Result<()> {
@@ -564,10 +587,13 @@ fn id_key(id: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use serde_json::json;
 
     use super::{
         Decoration, Position, Range, TOKEN_TYPES, augment_initialize_response, hover_result,
+        sibling_installation_path,
     };
 
     #[test]
@@ -584,6 +610,18 @@ mod tests {
             message["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"],
             json!(TOKEN_TYPES)
         );
+    }
+
+    #[test]
+    fn resolves_managed_rustowl_next_to_the_adapter_installation() {
+        let adapter = Path::new("/zed-work/rustowl/adapter-v0.1.2/rustowl-zed-adapter");
+        let rustowl = Path::new("rustowl-v0.4.0/rustowl");
+        assert_eq!(
+            sibling_installation_path(adapter, rustowl).unwrap(),
+            Path::new("/zed-work/rustowl/rustowl-v0.4.0/rustowl")
+        );
+        assert!(sibling_installation_path(adapter, Path::new("rustowl")).is_none());
+        assert!(sibling_installation_path(adapter, Path::new("/usr/local/bin/rustowl")).is_none());
     }
 
     #[test]

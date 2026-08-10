@@ -1,6 +1,6 @@
 id = "rustowl"
 name = "RustOwl"
-version = "0.1.1"
+version = "0.1.2"
 schema_version = 1
 authors = ["RustyAuth contributors"]
 description = "Visualize Rust ownership and lifetimes with RustOwl."
