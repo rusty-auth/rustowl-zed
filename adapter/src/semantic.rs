@@ -577,7 +577,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
             facts: &[
                 (
                     "Scope",
-                    "inferred from MIR; this is not a `'static` annotation",
+                    "inferred from compiler liveness; this is not a `'static` annotation",
                 ),
                 (
                     "Meaning",
@@ -681,7 +681,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
                 ("Check", "the callee signature decides which case applies"),
             ],
             inlay_label: Some("← move / call · check ownership"),
-            priority: 80,
+            priority: 95,
         }),
         "copy" => Some(DecorationPresentation {
             title: "Value copied",
@@ -733,7 +733,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
         }),
         "mutation" => Some(DecorationPresentation {
             title: "Value updated",
-            summary: "A compiler MIR assignment writes a new state into this place.",
+            summary: "A compiler-verified assignment writes a new state into this place.",
             facts: &[
                 ("Capability", "the destination requires write access"),
                 (
@@ -775,7 +775,7 @@ pub fn decoration_presentation(kind: &str) -> Option<DecorationPresentation> {
         }),
         "async_suspend" => Some(DecorationPresentation {
             title: "Async suspension",
-            summary: "The generated future can pause here while retaining compiler-live state.",
+            summary: "The generated future can pause here while retaining the values needed to resume.",
             facts: &[
                 (
                     "Future state",

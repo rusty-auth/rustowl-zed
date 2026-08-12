@@ -193,20 +193,49 @@ async function main() {
         hover.contents.value.includes("### RustOwl ·")
       ) {
         const hoverMarkdown = hover.contents.value;
-        const learnerLayer = hoverMarkdown.split("**Compiler evidence**", 1)[0];
         if (
-          !hoverMarkdown.includes("**What this means**") ||
-          !hoverMarkdown.includes("**Compiler evidence**")
+          !hoverMarkdown.includes("read-only view") ||
+          !hoverMarkdown.includes("**Why it matters**") ||
+          !hoverMarkdown.includes("Verified by rustc against the current source")
         ) {
-          throw new Error("RustOwl hover omitted learner/expert disclosure layers");
-        }
-        if (/compiler temporary|\*?\(_\d+|\b_\d+\b/.test(learnerLayer)) {
           throw new Error(
-            `RustOwl learner explanation leaked an internal MIR identity: ${learnerLayer}`,
+            `RustOwl hover omitted the human ownership explanation:\n${hoverMarkdown}`,
+          );
+        }
+        if (
+          /compiler temporary|\*?\(_\d+|\b_\d+\b|\bMIR\b|revision \d|schema v\d|source [0-9a-f]{6,}/i.test(
+            hoverMarkdown,
+          )
+        ) {
+          throw new Error(
+            `RustOwl hover leaked compiler or storage internals: ${hoverMarkdown}`,
+          );
+        }
+        const evidence = await request("rustowl/inspectRange", {
+          uri: sourceUri,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 100, character: 0 },
+          },
+          documentVersion: 1,
+          limits: { max_nodes: 500, max_edges: 1000, max_depth: 8 },
+        });
+        const graph = evidence?.result;
+        const callSites =
+          graph?.nodes?.filter((node) => node.kind === "call_site") ?? [];
+        const callEdges =
+          graph?.edges?.filter((edge) => edge.kind === "calls") ?? [];
+        if (
+          callSites.length === 0 ||
+          callEdges.length === 0 ||
+          callSites.some((node) => node.label === "unresolved call")
+        ) {
+          throw new Error(
+            `RustOwl compiler graph omitted resolved call evidence (${callSites.length} call sites, ${callEdges.length} call edges; labels: ${callSites.map((node) => node.label).join(", ") || "none"})`,
           );
         }
         console.log(
-          `RustOwl indexed-graph smoke test passed without hover activation (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints).`,
+          `RustOwl indexed-graph smoke test passed without hover activation (${tokens.data.length / 5} underlines, ${hints.length} rich inline hints, ${callEdges.length} resolved call edges).`,
         );
         return;
       }

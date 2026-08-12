@@ -56,10 +56,10 @@ debugging time:
   analysis boundary?
 
 RustOwl brings those answers into the editing loop. The fast path stays quiet:
-compact inline signals show what matters. Hovering opens a progressive
-explanation, from an approachable consequence to exact MIR provenance. When a
-single location is not enough, the same evidence becomes a navigable workspace
-graph or a bounded Mermaid flow.
+compact inline signals show what matters. Hovering opens a short source-level
+explanation of the consequence, likely fix, and ownership flow. Exact compiler
+structure remains available through bounded graph and agent queries instead of
+crowding the editor with rustc internals.
 
 ## One compiler truth. Three audiences.
 
@@ -79,7 +79,7 @@ enough.
 | Surface | Experience |
 | --- | --- |
 | **Inline HUD** | Quiet move, borrow, mutation, liveness, drop, and async hints beside the relevant code. |
-| **Native hover** | A human explanation first, followed by certainty, source-level flow, exact compiler evidence, and MIR provenance. |
+| **Native hover** | A compact source-level event, consequence or fix, ownership flow, and freshness/certainty status. |
 | **Workspace cockpit** | Whole-workspace call chains, ownership flows, async state, Mermaid diagrams, and eventually opt-in runtime overlays. |
 | **Agent context** | The same revisioned, bounded evidence through six MCP tools and three task-focused prompts. |
 
@@ -137,15 +137,17 @@ than screenshots alone:
 | Gate | Verified result |
 | --- | --- |
 | **Live Zed Preview** | RustOwl underlines, inline hints, and layered hovers run beside `rust-analyzer` in a real editor session. |
-| **Native release matrix** | Checksummed runtimes build for macOS, Windows, and Linux on ARM64 and x86_64. |
-| **Exact-artifact clean install** | The macOS ARM64 CI archive produced 25 ownership underlines, 4 rich hints, 6 MCP tools, 3 prompts, and a fresh persisted revision in the smoke fixture. |
-| **Supply-chain verification** | Archive contents, manifests, checksums, SBOMs, licences, and binary formats are checked before publication. |
-| **Evidence integrity** | Hover and agent responses carry revision, source digest, schema, document version, freshness, certainty, and analysis-boundary metadata. |
+| **Native release matrix** | Release automation builds and verifies checksummed runtimes for macOS, Windows, and Linux on ARM64 and x86_64. |
+| **Exact compiler artifact** | Source-to-graph tests prove resolved calls, parameters, returns, generics, trait dispatch, closure captures, and exact rustc coroutine-layout fields. |
+| **Rapid-edit safety** | A repeated v1 → cancelled-v2 → v3 test proves the editor, portable snapshot, Helix, and a fresh MCP process converge on v3. |
+| **Injected persistence failure** | With Helix disabled, editor visuals remain live and a separate agent process reads the immutable portable snapshot. |
+| **Supply-chain verification** | Archive contents, manifests, checksums, SBOMs, licences, and binary formats are checked before publication; the extension verifies extracted checksums and schema before execution. |
+| **Evidence integrity** | Indexed and agent responses carry revision, schema, document version, freshness, certainty, bounds, and omission metadata; compact hovers state their evidence status without exposing internal IDs. |
 
-See the successful
-[main CI run](https://github.com/rusty-auth/rustowl-zed/actions/runs/31432087730)
+See the repository's current
+[main CI evidence](https://github.com/rusty-auth/rustowl-zed/actions/workflows/ci.yml)
 and
-[six-target release verification](https://github.com/rusty-auth/rustowl-zed/actions/runs/31432113493).
+[six-target release verification](https://github.com/rusty-auth/rustowl-zed/actions/workflows/release.yml).
 
 ## Release candidate status
 
@@ -172,13 +174,11 @@ explanations in Zed's native LSP hover popover, semantic-token underlines, and
 inlay hints. The showcases use a warm Gruvbox-inspired palette chosen to
 complement RustyAuth; popover and hint chrome follow the active Zed theme.
 
-Each compact hover uses progressive disclosure so it works for two audiences:
-
-1. **What this means** names the source-level values and explains what the
-   developer may read, mutate, move, or use next.
-2. **Compiler evidence** preserves certainty, MIR flow kind, internal place
-   provenance, source fingerprint, document version, and graph revision for
-   experienced Rust engineers investigating precise behavior.
+Each compact hover names the source-level event, explains the consequence or
+fix, and shows the shortest useful flow. It ends with an honest evidence
+status. Internal MIR places, revision metadata, larger traces, and exact
+omission counts remain available to experienced engineers and agents through
+the graph tools, where they do not compete with Zed's own documentation hover.
 
 Generic analysis boundaries and compiler-generated function-signature events
 do not outrank useful ownership facts. When evidence is conservative or
@@ -227,11 +227,12 @@ The graph contract connects:
   raw pointers, and unsafe code.
 
 HelixDB is embedded behind an engine-owned storage interface. The editor's hot
-path remains in memory, and the in-memory store remains a tested fallback.
-Persistence uses two bounded A/B generations: a new revision is staged and
-validated in the inactive slot, an atomic pointer activates it, and the other
-slot remains available for rollback. Users do not need Docker, a database
-daemon, a cloud account, or a Helix service.
+path remains in memory. Every valid editor revision is also written atomically
+to a small bounded portable snapshot, so a separate agent process still works
+when Helix is disabled, locked, missing, or corrupt. Helix publication is
+serialized and sequence-checked; readers compare both durable sources and use
+the newest validated revision. Users do not need Docker, a database daemon, a
+cloud account, or a Helix service.
 
 ### Follow ownership across functions and async state
 
@@ -290,10 +291,11 @@ always-on canvas.
 The extension registers the local `rustowl-ownership` stdio context server
 alongside its language server. The managed runtime supplies `rustowl-mcp`,
 allowing enabled Zed Agent Profiles to query the active ownership revision.
-The LSP process is the only graph writer; MCP opens the activated Helix slot as
-a bounded, read-only consumer. A short-lived worktree registry removes the
-startup race when Zed launches the Agent Panel before compiler indexing has
-registered every project root.
+The LSP process is the only graph writer; MCP compares the activated Helix
+revision with the newest portable snapshot and opens the newer validated
+artifact as a bounded, read-only consumer. A short-lived worktree registry
+removes the startup race when Zed launches the Agent Panel before compiler
+indexing has registered every project root.
 
 The tool surface is deliberately focused:
 
@@ -379,12 +381,15 @@ flowchart TB
     ENGINE --> RUSTC["rustc MIR + borrow checker"]
     RUSTC --> EXTRACT["Deterministic graph extraction"]
     EXTRACT --> MEMORY["Active in-memory revision"]
+    EXTRACT --> PORTABLE["Immutable portable snapshot"]
     EXTRACT --> HELIX["Staged HelixDB revision"]
     HELIX --> ACTIVE["Atomic active revision"]
 
     MEMORY --> INLINE["Inline HUD + hover"]
     ACTIVE --> COCKPIT["Mermaid cockpit"]
-    ACTIVE --> MCP
+    ACTIVE --> NEWEST["Newest validated durable revision"]
+    PORTABLE --> NEWEST
+    NEWEST --> MCP
     MCP --> AGENT["Zed Agent Panel"]
 
     CAPTURE["Explicit opt-in runtime capture"] -.-> EVIDENCE["Isolated runtime evidence"]
@@ -405,7 +410,8 @@ Zed's Extensions view.
 The extension downloads one target-specific runtime archive from this
 repository. It contains the Zed adapter, maintained RustOwl engine, compiler
 wrapper, MCP server, manifest, checksums, and the required MIT, MPL-2.0, and
-Apache-2.0 notices.
+Apache-2.0 notices. The extension verifies the compatibility manifest and every
+checksummed file before making any native binary executable.
 
 On its first managed launch, the adapter asks RustOwl to install the matching
 Rust compiler components. This is a one-time, potentially large download
@@ -514,9 +520,10 @@ saved revision after the next analysis finishes.
 - No source, graph, telemetry, or credentials are uploaded by RustOwl.
 - MCP only returns data after a user enables and invokes a tool through an agent.
 - Workspace-relative paths and bounded query budgets prevent arbitrary file access.
-- The LSP is the single graph writer; MCP opens the active revision read-only.
+- The LSP is the single graph writer; MCP opens the newest validated durable revision read-only.
 - Atomic activation preserves the previous valid revision after cancellation or a crash.
-- A missing, locked, corrupt, or disabled persisted index falls back to memory.
+- A missing, locked, corrupt, or disabled Helix index falls back to a bounded immutable portable snapshot for separate agent processes; editor reads remain in memory.
+- Managed downloads are checksum- and manifest-verified before any native binary executes.
 - Generated Mermaid labels are escaped before rendering.
 - Release artifacts carry licences, notices, checksums, and an SBOM.
 
@@ -532,12 +539,12 @@ not claims about the current prototype.
 | **M0 — Contracts** | Implemented: stable graph IDs, certainty model, ADRs, fixtures, and benchmark harness. |
 | **M1 — In-memory graph** | Implemented: deterministic extraction and bounded range, trace, and map queries. |
 | **M2 — Indexed LSP** | Implemented: range/graph/map/status methods, freshness enforcement, and update notifications. |
-| **M3 — HelixDB persistence** | Implemented: embedded native records, validated staging, read-only readers, recovery, memory fallback, and bounded A/B rotation. |
+| **M3 — HelixDB persistence** | Implemented: embedded native records, serialized sequence-safe activation, recovery, in-memory editor reads, and immutable portable agent fallback. |
 | **M4 — Zed cockpit** | Implemented: proactive inline HUD, layered hovers, async helpers, and Mermaid rendering through the shared graph. |
 | **M5 — Agent Panel** | Implemented: six read-only MCP tools, three audience-aware prompts, context-server registration, bounded output, and protocol smoke tests. |
 | **M6 — Runtime evidence** | Future, opt-in lane; intentionally excluded from the static-analysis release. |
 | **M7 — Unified runtime** | Implemented in release automation: six target archives, compatibility manifest, checksums, licences, notices, upgrade, and rollback. |
-| **M8 — Beta hardening** | In progress: local macOS live-editor, full six-platform packaging, and packaged macOS ARM64 clean-install gates pass; cross-platform visual, stress, and performance gates remain. |
+| **M8 — Beta hardening** | In progress: local macOS live-editor, compiler-artifact, rapid-edit race, injected-failure, bounded MCP, and six-platform packaging gates pass; cross-platform visual and performance characterization remain. |
 | **M9 — Marketplace GA** | Pending the tagged runtime matrix and upstream Zed extensions-repository review. |
 
 Read the [complete roadmap](docs/ownership-cockpit-roadmap.md) for graph schema,
@@ -569,7 +576,7 @@ Requirements:
 - a current stable Rust toolchain for the extension and adapter;
 - the `wasm32-wasip2` target;
 - the engine fork's pinned Rust toolchain for compiler work; and
-- RustOwl on `PATH` for the current end-to-end smoke fixture.
+- the maintained engine submodule.
 
 Clone the maintained engine fork and configure the original project as its
 `upstream` remote:
@@ -584,18 +591,26 @@ Build and test the current extension and adapter:
 ```sh
 rustup target add wasm32-wasip2
 cargo check --target wasm32-wasip2
+cargo test
 cargo test --manifest-path adapter/Cargo.toml
 cargo clippy --manifest-path adapter/Cargo.toml --all-targets -- -D warnings
 cargo build --manifest-path adapter/Cargo.toml
-RUSTOWL_AUTO_SETUP=0 node scripts/smoke.mjs /path/to/rustowl
-node scripts/mcp-smoke.mjs --server /path/to/rustowl-mcp
+node scripts/memory-fallback-smoke.mjs
+node scripts/rapid-edit-smoke.mjs
 ```
 
 Build and test the maintained compiler engine separately:
 
 ```sh
-cargo test --manifest-path engine/Cargo.toml
-cargo clippy --manifest-path engine/Cargo.toml --all-targets -- -D warnings
+cd engine
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo build --bins
+cd ..
+RUSTOWL_AUTO_SETUP=0 \
+RUSTOWLC="$PWD/engine/target/debug/rustowlc" \
+RUSTOWLC_WORKSPACE_WRAPPER="$PWD/engine/target/debug/rustowlc" \
+node scripts/compiler-graph-smoke.mjs "$PWD/engine/target/debug/rustowl"
 ```
 
 The Node smoke fixture is only a local protocol harness; production release

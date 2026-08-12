@@ -151,25 +151,8 @@
         color: #d5c4a1;
       }
 
-      .facts,
-      .also-list {
-        display: grid;
-        gap: 4px;
-        margin: 9px 0 0;
-        padding-left: 19px;
-        color: #bdae93;
-      }
-
-      .facts strong,
-      .also-list strong {
-        color: #ebdbb2;
-      }
-
-      .report {
-        margin-top: 11px !important;
-        padding: 7px 10px;
-        border-left: 2px solid #d65d0e;
-        background: #282828;
+      .detail {
+        margin-top: 10px !important;
         color: #d5c4a1;
       }
 
@@ -182,6 +165,7 @@
 
       .analysis {
         color: #bdae93;
+        font-size: 12px;
       }
 
       .popover strong {
@@ -211,14 +195,10 @@
           popoverTop: "74px",
           focus: 3,
           title: "Shared borrow",
-          summary: "<code>&amp;T</code> grants read-only access without transferring ownership.",
-          facts: [
-            ["Ownership", "the source keeps the value"],
-            ["Aliasing", "multiple shared readers may coexist"],
-            ["Mutation", "blocked until the last shared use ends"]
-          ],
-          report: "immutable borrow",
-          also: [["Definitely live", "variable <code>message</code> definitely lives here"]],
+          summary: "<code>borrowed</code> can read <code>message</code> without taking ownership. <code>message</code> remains the owner.",
+          why: "<code>message</code> cannot be mutably borrowed until <code>borrowed</code>'s final use.",
+          flow: "<code>message</code> ── shared view ─→ <code>borrowed</code>",
+          status: "Verified by rustc against the current source.",
           lines: [
             `<span class="kw">fn</span> <span class="fn">greet</span>() {`,
             `    <span class="kw">let</span> <span class="u-green">message</span> = <span class="type">String</span>::<span class="fn">from</span>(<span class="str">"hello, Rust"</span>);`,
@@ -231,18 +211,15 @@
           codeTop: "58px",
           popoverTop: "82px",
           focus: 7,
-          title: "Move or call",
-          summary: "RustOwl marks this as an ownership-sensitive move or call site.",
-          facts: [
-            ["By value", "a non-Copy argument transfers ownership to the callee"],
-            ["By reference", "the owner remains available after the borrow ends"],
-            ["Check", "the callee signature decides which case applies"]
-          ],
-          report: "variable moved",
-          also: [],
+          title: "Ownership moved",
+          summary: "Calling <code>send(payload)</code> moves <code>payload</code> into the <code>value</code> parameter of <code>send</code>. <code>payload</code> cannot be used again after this line.",
+          actionLabel: "Keep using <code>payload</code>",
+          why: "pass <code>&amp;payload</code> if the function only needs to read it, or use <code>payload.clone()</code> when a deliberate duplicate is appropriate.",
+          flow: "caller: <code>payload</code> → <code>send</code> → callee: <code>value</code>",
+          status: "Verified by rustc against the current source.",
           lines: [
-            `<span class="kw">fn</span> <span class="fn">send</span>(payload: <span class="type">String</span>) {`,
-            `    <span class="fn">drop</span>(payload);`,
+            `<span class="kw">fn</span> <span class="fn">send</span>(value: <span class="type">String</span>) {`,
+            `    <span class="fn">drop</span>(value);`,
             `}`,
             ``,
             `<span class="kw">fn</span> <span class="fn">main</span>() {`,
@@ -257,13 +234,10 @@
           popoverTop: "66px",
           focus: 4,
           title: "Borrow conflict",
-          summary: "Shared and exclusive borrows overlap at this point.",
-          facts: [
-            ["Rule", "<code>&amp;mut T</code> cannot overlap <code>&amp;T</code> or another <code>&amp;mut T</code> to the same place"],
-            ["Typical fix", "end the earlier borrow, shorten its scope, or reorder operations"]
-          ],
-          report: "immutable and mutable borrows of variable <code>scores</code> exist here",
-          also: [["Required lifetime", "<code>scores</code> must remain valid for the active references"]],
+          summary: "The exclusive view <code>first</code> and shared view <code>second</code> overlap on <code>scores</code>.",
+          why: "Rust rejects competing access. End the earlier borrow, shorten its scope, or reorder the operations.",
+          flow: "<code>scores</code> → <code>first: &amp;mut</code> ✕ <code>second: &amp;</code>",
+          status: "Verified by rustc against the current source.",
           lines: [
             `<span class="kw">fn</span> <span class="fn">adjust</span>() {`,
             `    <span class="kw">let</span> <span class="mut">mut</span> scores = <span class="macro">vec!</span>[<span class="num">10</span>, <span class="num">20</span>, <span class="num">30</span>];`,
@@ -278,13 +252,10 @@
           popoverTop: "70px",
           focus: 6,
           title: "Definitely live",
-          summary: "The value is initialized on every analyzed control-flow path here.",
-          facts: [
-            ["Guarantee", "no move or drop has made the value unavailable"],
-            ["Access", "its storage contains a value; active borrows may still restrict use"]
-          ],
-          report: "variable <code>left</code> definitely lives here",
-          also: [["Lifetime region", "lifetime of variable <code>left</code>"]],
+          summary: "The compiler sees <code>left</code> initialized on every path that reaches this expression.",
+          why: "This proves availability here; active borrows may still restrict how the value can be used.",
+          flow: "parameter <code>left</code> → selected return value → caller",
+          status: "Verified by rustc against the current source.",
           lines: [
             `<span class="kw">fn</span> <span class="fn">longest</span>&lt;<span class="u-green life">'a</span>&gt;(`,
             `    left: &amp;<span class="u-green life">'a</span> <span class="type">str</span>,`,
@@ -305,22 +276,13 @@
       const editor = document.getElementById("editor");
       editor.style.setProperty("--code-top", scene.codeTop);
       editor.style.setProperty("--popover-top", scene.popoverTop);
-      const facts = scene.facts
-        .map(([label, value]) => `<li><strong>${label}</strong> · ${value}</li>`)
-        .join("");
-      const also = scene.also.length
-        ? `<hr class="divider"><h4>Also active here</h4><ul class="also-list">${scene.also
-            .map(([label, value]) => `<li><strong>${label}</strong> · ${value}</li>`)
-            .join("")}</ul>`
-        : "";
       document.getElementById("popover").innerHTML = `
         <h3>RustOwl <span>·</span> ${scene.title}</h3>
         <p class="summary">${scene.summary}</p>
-        <ul class="facts">${facts}</ul>
-        <p class="report"><strong>RustOwl report</strong> · ${scene.report}</p>
-        ${also}
+        <p class="detail"><strong>${scene.actionLabel || "Why it matters"}</strong> · ${scene.why}</p>
+        <p class="detail"><strong>Flow</strong> · ${scene.flow}</p>
         <hr class="divider">
-        <p class="analysis"><strong>Analysis</strong> · Complete</p>`;
+        <p class="analysis">${scene.status}</p>`;
       document.getElementById("code").innerHTML = scene.lines
         .map((source, index) => `<div class="line ${index + 1 === scene.focus ? "focus" : ""}"><span class="number">${index + 1}</span><span class="source">${source || "&nbsp;"}</span></div>`)
         .join("");

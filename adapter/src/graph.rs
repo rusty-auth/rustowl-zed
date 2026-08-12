@@ -22,10 +22,15 @@ pub struct GraphQueryResponse {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphSlice {
     pub schema_version: u32,
+    #[allow(dead_code)]
     pub revision_id: String,
+    #[allow(dead_code)]
     pub revision_sequence: u64,
+    #[allow(dead_code)]
     pub source_fingerprint: String,
+    #[allow(dead_code)]
     pub requested_document_version: Option<i64>,
+    #[allow(dead_code)]
     pub analyzed_document_version: Option<i64>,
     pub fresh: bool,
     pub truncated: bool,
@@ -52,6 +57,7 @@ pub struct GraphEdge {
     pub location: Option<SourceLocation>,
     pub order: Option<u32>,
     pub certainty: String,
+    #[allow(dead_code)]
     pub explanation: Option<String>,
 }
 
@@ -160,45 +166,60 @@ pub fn graph_decorations(uri: &str, slice: &GraphSlice) -> Result<Vec<Decoration
 
 fn edge_presentation(edge: &GraphEdge) -> Option<InsightPresentation> {
     match edge.kind.as_str() {
+        "calls" => Some(InsightPresentation {
+            kind: "call",
+            title: "Call target found",
+            summary: "RustOwl connected this call to the function that will receive it.",
+        }),
         "borrows_shared" => Some(InsightPresentation {
             kind: "imm_borrow",
             title: "Shared borrow",
-            summary: "The compiler creates a shared reference while the source retains ownership.",
+            summary: "This creates a read-only view; the original value keeps ownership.",
         }),
         "borrows_mut" => Some(InsightPresentation {
             kind: "mut_borrow",
             title: "Exclusive borrow",
-            summary: "The compiler creates an exclusive writable reference to this place.",
+            summary: "This creates a writable view that must be the only active access.",
         }),
         "moves_to" => Some(InsightPresentation {
             kind: "move",
             title: "Ownership moved",
-            summary: "The compiler consumes a non-Copy value along this MIR data-flow edge.",
+            summary: "This value is transferred rather than copied.",
         }),
         "copies_to" => Some(InsightPresentation {
             kind: "copy",
             title: "Value copied",
-            summary: "The compiler duplicates this Copy value; the source remains available.",
+            summary: "This value is duplicated, so the original remains usable.",
         }),
         "mutates_through" => Some(InsightPresentation {
             kind: "mutation",
             title: "Value updated",
-            summary: "This compiler-proven data-flow edge writes a new state into its destination.",
+            summary: "This operation changes the value in place.",
         }),
         "returns_as" => Some(InsightPresentation {
             kind: "return",
-            title: "Value returned",
-            summary: "Ownership or a reference flows into a call result or function return place.",
+            title: "Call result",
+            summary: "The result of this call is stored here.",
         }),
         "drops_at" | "cancellation_drops_at" => Some(InsightPresentation {
             kind: "drop",
             title: "Value dropped",
-            summary: "The compiler routes this value into destructor or cancellation cleanup.",
+            summary: "This value is cleaned up and cannot be used afterward.",
         }),
         "live_across_await" => Some(InsightPresentation {
             kind: "async_suspend",
-            title: "Live across async suspension",
-            summary: "Compiler liveness retains this place inside the future across a suspension point.",
+            title: "Saved across await",
+            summary: "This value is stored inside the future while execution is paused.",
+        }),
+        "blocks_send" => Some(InsightPresentation {
+            kind: "async_suspend",
+            title: "Future is not Send",
+            summary: "This retained value is the compiler-proven reason the generated future cannot move between threads.",
+        }),
+        "blocks_static" => Some(InsightPresentation {
+            kind: "async_suspend",
+            title: "Future borrows from its caller",
+            summary: "This retained reference carries a non-'static region into the generated future.",
         }),
         _ => None,
     }
@@ -231,35 +252,173 @@ fn edge_markdown(
     // read it: owner -> resulting reference. Borrow-region event edges retain
     // their native place -> event direction.
     let reverse_borrow_assignment = borrow_assignment_edge(&edge.kind, source, target);
-    let (source_label, target_label, source_node, target_node) = if reverse_borrow_assignment {
-        (target_label, source_label, target, source)
+    let (source_label, target_label) = if reverse_borrow_assignment {
+        (target_label, source_label)
     } else {
-        (source_label, target_label, source, target)
+        (source_label, target_label)
     };
-    let consequence = edge_consequence(&edge.kind, &source_label, &target_label);
-    let source_evidence = evidence_label(&source_label, &source_node.label);
-    let target_evidence = evidence_label(&target_label, &target_node.label);
-    let mut markdown = format!(
-        "### RustOwl · {}\n\n{}\n\n**What this means** · {}\n\n**Compiler evidence**\n\n- **Certainty** · {}\n- **MIR flow** · `{}`\n- **From** · `{}`\n- **To** · `{}`",
-        presentation.title,
-        presentation.summary,
-        consequence,
-        certainty_label(&edge.certainty),
-        edge.kind.replace('_', " "),
-        source_evidence,
-        target_evidence,
+    let expression = source_expression(document, range);
+    let consequence = human_edge_consequence(
+        &edge.kind,
+        &source_label,
+        &target_label,
+        expression.as_deref(),
     );
-    if let Some(explanation) = edge.explanation.as_deref() {
-        markdown.push_str(&format!("\n- **Compiler flow** · {explanation}"));
+    // Edge hovers compete with Zed's own signature/documentation hover. Keep
+    // the developer-facing card to one explanation, one consequence, and one
+    // flow instead of repeating the same event in a summary paragraph.
+    let mut markdown = format!("### RustOwl · {}\n\n{}", presentation.title, consequence);
+    if let Some((label, guidance)) = human_edge_guidance(&edge.kind, &source_label) {
+        markdown.push_str(&format!("\n\n**{label}** · {guidance}"));
     }
     markdown.push_str(&format!(
-        "\n\n**Ownership flow**\n\n`{}` → **{}** → `{}`",
-        source_label,
-        edge.kind.replace('_', " "),
-        target_label,
+        "\n\n**Flow** · {}",
+        human_edge_flow(
+            &edge.kind,
+            &source_label,
+            &target_label,
+            expression.as_deref(),
+        )
     ));
-    append_revision_footer(&mut markdown, slice);
+    append_human_provenance(&mut markdown, slice, &edge.certainty);
     markdown
+}
+
+fn source_expression(document: &str, range: crate::semantic::Range) -> Option<String> {
+    let line = document.lines().nth(range.start.line as usize)?;
+    let code = line.split("//").next()?.trim();
+    let expression = let_assignment(code)
+        .map(|(_, expression)| expression)
+        .unwrap_or(code)
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    (!expression.is_empty()).then(|| expression.to_owned())
+}
+
+fn human_edge_consequence(
+    kind: &str,
+    source: &str,
+    target: &str,
+    expression: Option<&str>,
+) -> String {
+    let expression = expression.filter(|value| value.len() <= 100);
+    match kind {
+        "calls" => expression
+            .map(|call| format!("`{call}` enters `{target}`."))
+            .unwrap_or_else(|| format!("This call enters `{target}`.")),
+        "borrows_shared" => format!(
+            "`{target}` is a read-only view of `{source}` and does not take ownership. `{source}` remains the owner."
+        ),
+        "borrows_mut" => format!(
+            "`{target}` can modify `{source}`. While this borrow is active, no other code may read or write `{source}`."
+        ),
+        "moves_to" => expression
+            .map(|call| match call_name(call) {
+                Some(callee) => format!(
+                    "Calling `{call}` moves `{source}` into the `{target}` parameter of `{callee}`. `{source}` cannot be used again after this line."
+                ),
+                None => format!(
+                    "`{call}` takes ownership of `{source}`. Inside the called function it becomes parameter `{target}`."
+                ),
+            })
+            .unwrap_or_else(|| {
+                format!("`{source}` transfers ownership to `{target}` rather than being copied.")
+            }),
+        "copies_to" => format!(
+            "`{target}` receives a copy of `{source}`; both values remain usable."
+        ),
+        "mutates_through" => format!("This operation changes `{target}` in place."),
+        "returns_as" => expression
+            .map(|call| format!("The result of `{call}` is stored as `{target}`."))
+            .unwrap_or_else(|| format!("The returned value is stored as `{target}`.")),
+        "drops_at" | "cancellation_drops_at" => {
+            format!("`{source}` is cleaned up here and is no longer available.")
+        }
+        "live_across_await" => format!(
+            "`{source}` is needed after this `.await`, so the generated future keeps it while the task is paused."
+        ),
+        "blocks_send" => format!(
+            "Retaining `{source}` makes this future non-`Send`, so it cannot be moved to another thread."
+        ),
+        "blocks_static" => format!(
+            "Retaining `{source}` keeps a caller-owned borrow inside this future."
+        ),
+        _ => format!("Ownership state flows from `{source}` to `{target}`."),
+    }
+}
+
+fn human_edge_guidance(kind: &str, source: &str) -> Option<(String, String)> {
+    match kind {
+        "borrows_shared" => Some((
+            "Why it matters".to_owned(),
+            format!(
+                "`{source}` cannot be mutably borrowed until the final use of the shared reference."
+            ),
+        )),
+        "borrows_mut" => Some((
+            "Why it matters".to_owned(),
+            "the exclusive access ends after the reference's final use—or when a containing future is dropped."
+                .to_owned(),
+        )),
+        "moves_to" => Some((
+            format!("Keep using `{source}`"),
+            format!(
+                "pass `&{source}` if the function only needs to read it, or use `{source}.clone()` when a deliberate duplicate is appropriate."
+            ),
+        )),
+        "returns_as" => Some((
+            "Why it matters".to_owned(),
+            "if the result is a reference, its source must stay valid for as long as that reference is used."
+                .to_owned(),
+        )),
+        "live_across_await" => Some((
+            "Why it matters".to_owned(),
+            "saved values affect the future's size, cancellation cleanup, and whether it can satisfy `Send` or `'static`."
+                .to_owned(),
+        )),
+        "blocks_send" => Some((
+            "Why it matters".to_owned(),
+            "multi-thread executors such as `tokio::spawn` require the spawned future to be `Send`."
+                .to_owned(),
+        )),
+        "blocks_static" => Some((
+            "Why it matters".to_owned(),
+            "detached task spawners usually require `'static`; await the task locally or move owned data into it."
+                .to_owned(),
+        )),
+        _ => None,
+    }
+}
+
+fn call_name(expression: &str) -> Option<&str> {
+    let prefix = expression.split_once('(')?.0.trim();
+    let name = prefix.rsplit("::").next()?.trim();
+    valid_identifier(name).then_some(name)
+}
+
+fn human_edge_flow(kind: &str, source: &str, target: &str, expression: Option<&str>) -> String {
+    match kind {
+        "moves_to" => expression
+            .map(|call| match call_name(call) {
+                Some(callee) => {
+                    format!("caller: `{source}` → `{callee}` → callee: `{target}`")
+                }
+                None => format!("`{source}` → `{call}` → parameter `{target}`"),
+            })
+            .unwrap_or_else(|| format!("`{source}` → `{target}`")),
+        "returns_as" => expression
+            .map(|call| format!("`{call}` → `{target}`"))
+            .unwrap_or_else(|| format!("return → `{target}`")),
+        "borrows_shared" => format!("`{source}` ── shared view ─→ `{target}`"),
+        "borrows_mut" => format!("`{source}` ── exclusive view ─→ `{target}`"),
+        "copies_to" => format!("`{source}` ── copy ─→ `{target}`"),
+        "mutates_through" => format!("operation ── writes ─→ `{target}`"),
+        "live_across_await" => format!("`{source}` → future storage → resume"),
+        "blocks_send" => format!("`{source}` → retained field → future is not `Send`"),
+        "blocks_static" => format!("`{source}` → retained borrow → future is not `'static`"),
+        _ => format!("`{source}` → `{target}`"),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -419,14 +578,6 @@ fn target_role(kind: &str) -> &'static str {
     }
 }
 
-fn evidence_label(readable: &str, compiler: &str) -> String {
-    if readable == compiler {
-        readable.to_owned()
-    } else {
-        format!("{readable} (MIR {compiler})")
-    }
-}
-
 fn learner_place_label(label: &str) -> String {
     let label = label.trim();
     let Some(inner) = label
@@ -440,36 +591,6 @@ fn learner_place_label(label: &str) -> String {
         label.to_owned()
     } else {
         inner.to_owned()
-    }
-}
-
-fn edge_consequence(kind: &str, source: &str, target: &str) -> String {
-    match kind {
-        "borrows_shared" => format!(
-            "`{source}` keeps ownership. `{target}` may read the value, while mutation waits until the last shared use ends."
-        ),
-        "borrows_mut" => format!(
-            "`{target}` has temporary exclusive write access to `{source}`; competing reads and writes are blocked for that borrow."
-        ),
-        "moves_to" => format!(
-            "Ownership leaves `{source}` and continues at `{target}`. The source cannot be used again unless it is reinitialized."
-        ),
-        "copies_to" => format!(
-            "The value is copied from `{source}` to `{target}`. Both remain usable because the transferred value is `Copy`."
-        ),
-        "mutates_through" => format!(
-            "This operation writes the next state of `{target}`; any active borrow must permit mutation."
-        ),
-        "returns_as" => format!(
-            "The value or reference flows from `{source}` into `{target}` as a call or function result."
-        ),
-        "drops_at" | "cancellation_drops_at" => format!(
-            "`{source}` is cleaned up at `{target}` and is unavailable afterward unless initialized again."
-        ),
-        "live_across_await" => format!(
-            "`{source}` is stored inside the future across `{target}`. It must remain valid through suspension and is considered on cancellation."
-        ),
-        _ => format!("Ownership state flows from `{source}` to `{target}`."),
     }
 }
 
@@ -555,8 +676,7 @@ fn developer_label(
         labels.sort();
         labels.dedup();
         if !labels.is_empty() {
-            labels.truncate(2);
-            return format!("{} (via {})", labels.join(" / "), node.label);
+            return labels.into_iter().next().unwrap();
         }
         let mut next = Vec::new();
         for edge in slice.edges.iter().filter(|edge| traversable(&edge.kind)) {
@@ -578,7 +698,7 @@ fn developer_label(
         }
         frontier = next;
     }
-    format!("compiler temporary {}", node.label)
+    "an internal temporary".to_owned()
 }
 
 fn internal_place_label(label: &str) -> bool {
@@ -597,13 +717,13 @@ fn insight_presentation(node: &GraphNode) -> Option<InsightPresentation> {
                 InsightPresentation {
                     kind: "mut_borrow",
                     title: "Exclusive borrow",
-                    summary: "`&mut T` grants temporary writable access while excluding competing aliases.",
+                    summary: "This reference can write to the value and must be the only active access.",
                 }
             } else {
                 InsightPresentation {
                     kind: "imm_borrow",
                     title: "Shared borrow",
-                    summary: "`&T` grants shared read access while the source retains ownership.",
+                    summary: "This is a read-only view; the original value keeps ownership.",
                 }
             }
         }
@@ -632,17 +752,17 @@ fn insight_presentation(node: &GraphNode) -> Option<InsightPresentation> {
         "call_site" => InsightPresentation {
             kind: "call",
             title: "Ownership-sensitive call",
-            summary: "MIR records values passed into this call and the place receiving its result.",
+            summary: "This call may borrow, copy, or take ownership of its arguments.",
         },
         "move_event" => InsightPresentation {
             kind: "move",
             title: "Ownership moved",
-            summary: "A non-Copy value leaves its source place until that place is reinitialized.",
+            summary: "This value is transferred rather than copied.",
         },
         "mutation_event" => InsightPresentation {
             kind: "mutation",
             title: "Value updated",
-            summary: "This MIR assignment writes a new state into its destination place.",
+            summary: "This operation changes the value in place.",
         },
         "drop_event" => InsightPresentation {
             kind: "drop",
@@ -652,13 +772,17 @@ fn insight_presentation(node: &GraphNode) -> Option<InsightPresentation> {
         "return_event" => InsightPresentation {
             kind: "return",
             title: "Value returned",
-            summary: "Ownership or a reference leaves this function through its MIR return place.",
+            summary: "This value leaves the function as its result.",
         },
         "suspension_point" => InsightPresentation {
             kind: "async_suspend",
             title: "Async suspension",
             summary: "The generated future can suspend here while retaining compiler-live state.",
         },
+        // Async constraint nodes are intentionally not rendered on their own.
+        // The suspension-point hover folds every exact future field into one
+        // human explanation, avoiding duplicate Zed popups and raw field types.
+        "async_constraint" => return None,
         "branch_join" => InsightPresentation {
             kind: "branch_join",
             title: "Control-flow join",
@@ -685,29 +809,22 @@ fn insight_markdown(
     slice: &GraphSlice,
     nodes: &HashMap<&str, &GraphNode>,
 ) -> String {
+    if node.kind == "suspension_point" {
+        return async_suspension_markdown(node, slice, nodes);
+    }
     let subject = insight_subject(node, slice, nodes);
     let mut markdown = format!(
-        "### RustOwl · {}\n\n{}\n\n**What this means** · {}\n\n**Compiler evidence**\n\n- **Certainty** · {}\n- **Evidence kind** · `{}`\n- **Subject** · `{}`",
+        "### RustOwl · {}\n\n{}\n\n{}",
         presentation.title,
         presentation.summary,
         insight_consequence(node, &subject),
-        certainty_label(&node.certainty),
-        node.kind.replace('_', " "),
-        subject,
     );
-    if node.kind == "liveness_event" {
-        let state = node
-            .properties
-            .get("class")
-            .and_then(Value::as_str)
-            .unwrap_or(&node.label)
-            .replace('_', " ");
-        markdown.push_str(&format!("\n- **Compiler state** · `{state}`"));
+    if let Some(why) = human_node_why(node, &subject) {
+        markdown.push_str(&format!("\n\n**Why it matters** · {why}"));
     }
 
     let mut related_places = Vec::new();
     let mut capabilities = Vec::new();
-    let mut flows = Vec::new();
     let mut related_edges: Vec<_> = slice
         .edges
         .iter()
@@ -723,7 +840,7 @@ fn insight_markdown(
         if let Some(other) = nodes.get(other_id) {
             if matches!(other.kind.as_str(), "place" | "binding") {
                 let related = learner_place_label(&developer_label(other, slice, nodes));
-                if related != subject {
+                if related != subject && related != "an internal temporary" {
                     related_places.push(format!("`{related}`"));
                 }
             }
@@ -731,27 +848,6 @@ fn insight_markdown(
                 && let Some(capability) = other.properties.get("capability").and_then(Value::as_str)
             {
                 capabilities.push(capability.replace('_', " "));
-            }
-            if flows.len() < 4 {
-                let (from, to) = if edge.source == node.id {
-                    (
-                        developer_label(node, slice, nodes),
-                        developer_label(other, slice, nodes),
-                    )
-                } else {
-                    (
-                        developer_label(other, slice, nodes),
-                        developer_label(node, slice, nodes),
-                    )
-                };
-                flows.push(format!(
-                    "`{from}` → **{}** → `{to}`{}",
-                    edge.kind.replace('_', " "),
-                    edge.explanation
-                        .as_deref()
-                        .map(|explanation| format!(" · {explanation}"))
-                        .unwrap_or_default()
-                ));
             }
         }
     }
@@ -761,34 +857,286 @@ fn insight_markdown(
     capabilities.dedup();
     if !related_places.is_empty() {
         markdown.push_str(&format!(
-            "\n- **Place{}** · {}",
+            "\n\n**Related value{}** · {}",
             if related_places.len() == 1 { "" } else { "s" },
             related_places.join(", ")
         ));
     }
     if !capabilities.is_empty() {
         markdown.push_str(&format!(
-            "\n- **Capability** · {}",
+            "\n\n**Access now** · {}",
             capabilities.join(" · ")
         ));
     }
-    append_property_facts(&mut markdown, node);
-    if node.kind == "suspension_point" {
-        markdown.push_str(
-            "\n- **Cancellation** · dropping the future follows the compiler cleanup edge and drops retained state",
-        );
-    }
     if node.kind == "call_site" && node.certainty == "unresolved" {
         markdown.push_str(
-            "\n- **Boundary** · argument moves/borrows are compiler-grounded; the callee identity is not resolved in this revision",
+            "\n\n**Limit** · RustOwl can see how the arguments are used here, but it could not identify the called function.",
         );
     }
-    if !flows.is_empty() {
-        markdown.push_str("\n\n**Local ownership flow**\n\n");
-        markdown.push_str(&flows.join("  \n"));
-    }
-    append_revision_footer(&mut markdown, slice);
+    append_human_provenance(&mut markdown, slice, &node.certainty);
     markdown
+}
+
+fn human_node_why(node: &GraphNode, subject: &str) -> Option<String> {
+    match node.kind.as_str() {
+        "borrow_event"
+            if node
+                .properties
+                .get("mutable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            Some("other reads and writes must wait until this reference's final use.".to_owned())
+        }
+        "borrow_event" => Some(format!(
+            "`{subject}` cannot be mutably borrowed until the final shared use."
+        )),
+        "move_event" => Some(format!(
+            "`{subject}` cannot be used again unless it is assigned a new value. Borrow it or clone deliberately if the caller still needs it."
+        )),
+        "drop_event" => Some(
+            "destructors run here; any owned resources are released on this path.".to_owned(),
+        ),
+        "return_event" => Some(
+            "the caller now owns the returned value—or must uphold the returned reference's lifetime."
+                .to_owned(),
+        ),
+        "liveness_event" => Some(
+            "this is an availability fact, not a guarantee that the value will be used.".to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct RetainedFutureField {
+    index: u64,
+    name: Option<String>,
+    type_name: String,
+    send: String,
+    static_lifetime: String,
+    ignored_for_traits: bool,
+}
+
+fn async_suspension_markdown(
+    suspension: &GraphNode,
+    slice: &GraphSlice,
+    nodes: &HashMap<&str, &GraphNode>,
+) -> String {
+    let mut fields: Vec<_> = nodes
+        .values()
+        .filter(|candidate| {
+            candidate.kind == "future_field"
+                && slice.edges.iter().any(|edge| {
+                    edge.kind == "live_across_await"
+                        && edge.source == candidate.id
+                        && edge.target == suspension.id
+                })
+        })
+        .map(|candidate| RetainedFutureField {
+            index: candidate
+                .properties
+                .get("field_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX),
+            name: candidate
+                .properties
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| {
+                    !name.is_empty() && !name.starts_with('_') && !name.starts_with("__awaitee")
+                })
+                .map(str::to_owned),
+            type_name: friendly_type(
+                candidate
+                    .properties
+                    .get("type_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+            ),
+            send: candidate
+                .properties
+                .get("send")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            static_lifetime: candidate
+                .properties
+                .get("static_lifetime")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            ignored_for_traits: candidate
+                .properties
+                .get("ignore_for_traits")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+        .collect();
+    fields.sort_by_key(|field| (field.name.is_none(), field.index));
+
+    let named: Vec<_> = fields.iter().filter(|field| field.name.is_some()).collect();
+    let unnamed_count = fields.len().saturating_sub(named.len());
+    let title = match named.as_slice() {
+        [field] => format!(
+            "### RustOwl · Await holds `{}`",
+            field.name.as_deref().unwrap_or("value")
+        ),
+        [] => "### RustOwl · Await boundary".to_owned(),
+        many => format!("### RustOwl · Await holds {} source values", many.len()),
+    };
+
+    let mut markdown = title;
+    if fields.is_empty() {
+        markdown.push_str(
+            "\n\nExecution can pause here, but RustOwl could not recover this suspension point's saved fields. No `Send` or `'static` claim is made for this analysis.\n\n**Why you care**\n\n- **Cancellation** · dropping the future stops execution after this point and runs its compiler-generated cleanup.",
+        );
+        markdown.push_str(
+            "\n\nRustOwl found the pause point, but rustc did not expose the saved fields for this future. No `Send` or `'static` conclusion is shown.",
+        );
+        append_human_provenance(&mut markdown, slice, &suspension.certainty);
+        return markdown;
+    }
+
+    if let [field] = named.as_slice() {
+        markdown.push_str(&format!(
+            "\n\nExecution can pause here. The generated future stores `{}: {}` because it is needed after execution resumes.",
+            field.name.as_deref().unwrap_or("value"),
+            field.type_name
+        ));
+    } else if !named.is_empty() {
+        let names = named
+            .iter()
+            .filter_map(|field| field.name.as_deref())
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        markdown.push_str(&format!(
+            "\n\nExecution can pause here. The generated future stores {names} because they are needed after execution resumes."
+        ));
+    } else {
+        markdown.push_str(
+            "\n\nExecution can pause here. The generated future stores compiler-generated state needed to resume this operation.",
+        );
+    }
+
+    markdown.push_str("\n\n**Why you care**");
+    if let Some(field) = fields
+        .iter()
+        .find(|field| field.type_name.starts_with("&mut "))
+    {
+        markdown.push_str(&format!(
+            "\n\n- **Exclusive borrow** · `{}` is a writable reference saved across this `.await`. The value it points to remains exclusively borrowed until the future passes its last use or is dropped.",
+            field.name.as_deref().unwrap_or("the referenced value")
+        ));
+    } else if let Some(field) = fields.iter().find(|field| field.type_name.starts_with('&')) {
+        markdown.push_str(&format!(
+            "\n\n- **Shared borrow** · `{}` is a read-only reference saved across this `.await`. The value it points to cannot be mutated until the future passes its last use or is dropped.",
+            field.name.as_deref().unwrap_or("the referenced value")
+        ));
+    } else {
+        markdown.push_str(
+            "\n\n- **Stored state** · these values become fields of the generated future while the task is suspended.",
+        );
+    }
+
+    let trait_fields: Vec<_> = fields
+        .iter()
+        .filter(|field| !field.ignored_for_traits)
+        .collect();
+    markdown.push_str(&format!(
+        "\n- **`Send`** · {}",
+        async_status_explanation(&trait_fields, |field| &field.send, "`Send`", true)
+    ));
+    markdown.push_str(&format!(
+        "\n- **`'static`** · {}",
+        async_status_explanation(
+            &trait_fields,
+            |field| &field.static_lifetime,
+            "`'static`",
+            false,
+        )
+    ));
+    markdown.push_str(
+        "\n- **Cancellation** · dropping the future releases retained borrows and drops owned retained state; code after this `.await` does not run.",
+    );
+
+    if !named.is_empty() || unnamed_count > 0 {
+        markdown.push_str("\n\n**Retained future state**");
+        for field in named.iter().take(6) {
+            markdown.push_str(&format!(
+                "\n\n- `{}: {}` · `Send`: {} · `'static`: {}",
+                field.name.as_deref().unwrap_or("value"),
+                field.type_name,
+                human_status(&field.send),
+                human_status(&field.static_lifetime),
+            ));
+        }
+        if named.len() > 6 {
+            markdown.push_str(&format!("\n- …and {} more named fields", named.len() - 6));
+        }
+        if unnamed_count > 0 {
+            markdown.push_str(&format!(
+                "\n- {} compiler-generated field{} included in the checks (internal names hidden)",
+                unnamed_count,
+                if unnamed_count == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    append_human_provenance(&mut markdown, slice, &suspension.certainty);
+    markdown
+}
+
+fn async_status_explanation(
+    fields: &[&RetainedFutureField],
+    status: impl Fn(&RetainedFutureField) -> &String,
+    requirement: &str,
+    send: bool,
+) -> String {
+    if let Some(field) = fields.iter().find(|field| status(field) == "rejected") {
+        let subject = field
+            .name
+            .as_deref()
+            .map(|name| format!("`{name}: {}`", field.type_name))
+            .unwrap_or_else(|| format!("`{}`", field.type_name));
+        if send {
+            return format!(
+                "**no** — retained {subject} is not {requirement}; a multi-thread task spawner will reject this future."
+            );
+        }
+        return format!(
+            "**no** — retained {subject} borrows outside the future; detached spawns requiring {requirement} will reject it."
+        );
+    }
+    if fields.is_empty() || fields.iter().any(|field| status(field) == "unknown") {
+        return format!(
+            "**not proven** — the compiler evidence contains a generic or unresolved field, so RustOwl will not claim {requirement}."
+        );
+    }
+    if send {
+        "**yes** — this future may be moved between threads.".to_owned()
+    } else {
+        "**yes** — this future does not retain caller-owned references.".to_owned()
+    }
+}
+
+fn human_status(status: &str) -> &'static str {
+    match status {
+        "proven" => "yes",
+        "rejected" => "no",
+        _ => "not proven",
+    }
+}
+
+fn friendly_type(type_name: &str) -> String {
+    type_name
+        .replace("alloc::string::String", "String")
+        .replace("std::string::String", "String")
+        .replace("alloc::rc::Rc", "Rc")
+        .replace("alloc::sync::Arc", "Arc")
+        .replace("core::", "")
+        .replace("std::", "")
 }
 
 fn insight_subject(
@@ -870,6 +1218,26 @@ fn insight_consequence(node: &GraphNode, subject: &str) -> String {
         "suspension_point" => format!(
             "`{subject}` can be stored in the generated future while execution is paused. Its validity and cancellation cleanup both matter."
         ),
+        "async_constraint" => {
+            let type_name = node
+                .properties
+                .get("type_name")
+                .and_then(Value::as_str)
+                .unwrap_or(subject);
+            let send = node
+                .properties
+                .get("send")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let static_lifetime = node
+                .properties
+                .get("static_lifetime")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!(
+                "`{type_name}` is retained across this `.await`. Send is `{send}` and `'static` compatibility is `{static_lifetime}`; rejected evidence identifies the exact field that prevents detached-task compatibility."
+            )
+        }
         "liveness_event" => format!(
             "The compiler still considers `{subject}` available at this point on the indicated control-flow paths."
         ),
@@ -881,69 +1249,20 @@ fn insight_consequence(node: &GraphNode, subject: &str) -> String {
     }
 }
 
-fn append_revision_footer(markdown: &mut String, slice: &GraphSlice) {
-    let revision = slice.revision_id.chars().take(8).collect::<String>();
-    let fingerprint = slice.source_fingerprint.chars().take(8).collect::<String>();
-    let version = match (
-        slice.requested_document_version,
-        slice.analyzed_document_version,
-    ) {
-        (Some(requested), Some(analyzed)) if requested == analyzed => {
-            format!(" · document v{analyzed}")
+fn append_human_provenance(markdown: &mut String, slice: &GraphSlice, certainty: &str) {
+    let status = if !slice.fresh {
+        "Analysis is updating; this result is from the previous saved state."
+    } else {
+        match certainty {
+            "compiler_proven" => "Verified by rustc against the current source.",
+            "source_resolved" => "Matched to the current source.",
+            "conservative" => "Conservative: this may happen on some control-flow paths.",
+            _ => "Unresolved: RustOwl will not make a stronger claim here.",
         }
-        (Some(requested), Some(analyzed)) => {
-            format!(" · requested v{requested}, analyzed v{analyzed}")
-        }
-        (Some(requested), None) => format!(" · requested v{requested}"),
-        (None, Some(analyzed)) => format!(" · analyzed v{analyzed}"),
-        (None, None) => String::new(),
     };
-    markdown.push_str(&format!(
-        "\n\n`revision {} ({revision}) · source {fingerprint} · schema v{}{}{}{} `",
-        slice.revision_sequence,
-        slice.schema_version,
-        version,
-        if slice.fresh {
-            " · fresh"
-        } else {
-            " · stale"
-        },
-        if slice.truncated {
-            " · bounded result"
-        } else {
-            ""
-        },
-    ));
-}
-
-fn append_property_facts(markdown: &mut String, node: &GraphNode) {
-    for (property, label) in [
-        ("resume_block", "Resume block"),
-        ("drop_block", "Cancellation block"),
-        ("predecessors", "Predecessors"),
-        ("back_edge_sources", "Back edges"),
-        ("boundary", "Boundary"),
-    ] {
-        let Some(value) = node.properties.get(property) else {
-            continue;
-        };
-        markdown.push_str(&format!("\n- **{label}** · `{}`", compact_value(value)));
-    }
-}
-
-fn compact_value(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        _ => value.to_string(),
-    }
-}
-
-fn certainty_label(certainty: &str) -> &'static str {
-    match certainty {
-        "compiler_proven" => "compiler-proven MIR fact",
-        "source_resolved" => "source-resolved fact",
-        "conservative" => "conservative possibility",
-        _ => "explicitly unresolved boundary",
+    markdown.push_str(&format!("\n\n---\n{status}"));
+    if slice.truncated {
+        markdown.push_str(" More connected context is available in the RustOwl graph tools.");
     }
 }
 
@@ -1025,11 +1344,13 @@ mod tests {
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].kind, "imm_borrow");
         let markdown = decorations[0].hover_text.as_deref().unwrap();
-        assert!(markdown.contains("compiler-proven MIR fact"));
+        assert!(markdown.contains("Shared borrow"));
         assert!(markdown.contains("`message`"));
-        assert!(markdown.contains("**borrows shared**"));
-        assert!(markdown.contains("revision 7 (revision)"));
-        assert!(markdown.contains("schema v1 · document v1 · fresh"));
+        assert!(markdown.contains("read-only view"));
+        assert!(markdown.contains("Verified by rustc against the current source"));
+        assert!(!markdown.contains("MIR"));
+        assert!(!markdown.contains("revision"));
+        assert!(!markdown.contains("schema"));
     }
 
     #[test]
@@ -1045,9 +1366,10 @@ mod tests {
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].kind, "imm_borrow");
         let markdown = decorations[0].hover_text.as_deref().unwrap();
-        assert!(markdown.contains("The compiler creates a shared reference"));
-        assert!(markdown.contains("**From** · `message`"));
-        assert!(markdown.contains("**To** · `shared borrow region`"));
+        assert!(markdown.contains("read-only view"));
+        assert!(markdown.contains("`message` ── shared view ─→ `shared borrow region`"));
+        assert!(!markdown.contains("**From**"));
+        assert!(!markdown.contains("MIR"));
     }
 
     #[test]
@@ -1212,11 +1534,10 @@ mod tests {
             "    let writable = &mut *message;\n",
             range,
         );
-        let learner = markdown.split("**Compiler evidence**").next().unwrap();
-        assert!(learner.contains("`writable` has temporary exclusive write access to `message`"));
-        assert!(!learner.contains("*(message)"));
-        assert!(markdown.contains("**From** · `message (MIR *(message))`"));
-        assert!(markdown.contains("`message` → **borrows mut** → `writable`"));
+        assert!(markdown.contains("`writable` can modify `message`"));
+        assert!(markdown.contains("`message` ── exclusive view ─→ `writable`"));
+        assert!(!markdown.contains("*(message)"));
+        assert!(!markdown.contains("MIR"));
     }
 
     #[test]
@@ -1271,12 +1592,10 @@ mod tests {
             &graph,
             &nodes,
         );
-        let learner = markdown.split("**Compiler evidence**").next().unwrap();
-        assert!(learner.contains("`message` available at this point"));
-        assert!(!learner.contains("maybe_initialized"));
-        assert!(markdown.contains("**Subject** · `message`"));
-        assert!(markdown.contains("**Compiler state** · `maybe initialized`"));
-        assert!(markdown.contains("`message` → **reports** → `maybe_initialized`"));
+        assert!(markdown.contains("`message` available at this point"));
+        assert!(!markdown.contains("maybe_initialized"));
+        assert!(markdown.contains("Conservative: this may happen"));
+        assert!(!markdown.contains("MIR"));
     }
 
     #[test]
@@ -1314,10 +1633,7 @@ mod tests {
             explanation: None,
         }];
 
-        assert_eq!(
-            developer_label(&internal, &graph, &nodes),
-            "message (via *(_23.0))"
-        );
+        assert_eq!(developer_label(&internal, &graph, &nodes), "message");
     }
 
     #[test]
@@ -1348,10 +1664,112 @@ mod tests {
             },
         );
 
-        assert!(markdown.contains("**What this means**"));
-        assert!(markdown.contains("keeps ownership"));
-        assert!(markdown.contains("**Compiler evidence**"));
-        assert!(markdown.contains("**MIR flow**"));
+        assert!(markdown.contains("read-only view"));
+        assert!(markdown.contains("**Why it matters**"));
+        assert!(markdown.contains("**Flow**"));
+        assert!(markdown.contains("Verified by rustc"));
+        assert!(!markdown.contains("MIR"));
+    }
+
+    #[test]
+    fn async_hover_explains_the_human_consequence_without_mir_temporaries() {
+        let suspension = GraphNode {
+            id: "await".into(),
+            kind: "suspension_point".into(),
+            label: "async suspension".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::new(),
+        };
+        let writable = GraphNode {
+            id: "field-writable".into(),
+            kind: "future_field".into(),
+            label: "writable".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::from([
+                ("field_index".into(), Value::from(0)),
+                ("name".into(), Value::String("writable".into())),
+                (
+                    "type_name".into(),
+                    Value::String("&mut alloc::string::String".into()),
+                ),
+                ("send".into(), Value::String("proven".into())),
+                ("static_lifetime".into(), Value::String("rejected".into())),
+                ("ignore_for_traits".into(), Value::Bool(false)),
+            ]),
+        };
+        let generated = GraphNode {
+            id: "field-generated".into(),
+            kind: "future_field".into(),
+            label: "generated future state #12".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::from([
+                ("field_index".into(), Value::from(12)),
+                ("name".into(), Value::Null),
+                (
+                    "type_name".into(),
+                    Value::String("core::future::Ready<()>".into()),
+                ),
+                ("send".into(), Value::String("proven".into())),
+                ("static_lifetime".into(), Value::String("proven".into())),
+                ("ignore_for_traits".into(), Value::Bool(false)),
+            ]),
+        };
+        let graph = GraphSlice {
+            schema_version: 1,
+            revision_id: "revision-id".into(),
+            revision_sequence: 9,
+            source_fingerprint: "async-source".into(),
+            requested_document_version: Some(4),
+            analyzed_document_version: Some(4),
+            fresh: true,
+            truncated: false,
+            nodes: vec![suspension, writable, generated],
+            edges: vec![
+                GraphEdge {
+                    kind: "live_across_await".into(),
+                    source: "field-writable".into(),
+                    target: "await".into(),
+                    location: None,
+                    order: Some(0),
+                    certainty: "compiler_proven".into(),
+                    explanation: None,
+                },
+                GraphEdge {
+                    kind: "live_across_await".into(),
+                    source: "field-generated".into(),
+                    target: "await".into(),
+                    location: None,
+                    order: Some(12),
+                    certainty: "compiler_proven".into(),
+                    explanation: None,
+                },
+            ],
+        };
+        let nodes: HashMap<_, _> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let markdown = insight_markdown(
+            &graph.nodes[0],
+            insight_presentation(&graph.nodes[0]).unwrap(),
+            &graph,
+            &nodes,
+        );
+
+        assert!(markdown.contains("Await holds `writable`"));
+        assert!(markdown.contains("`writable: &mut String`"));
+        assert!(markdown.contains("**Exclusive borrow**"));
+        assert!(markdown.contains("**`Send`** · **yes**"));
+        assert!(markdown.contains("**`'static`** · **no**"));
+        assert!(markdown.contains("**Cancellation**"));
+        assert!(markdown.contains("1 compiler-generated field"));
+        assert!(!markdown.contains("compiler temporary"));
+        assert!(!markdown.contains("_12"));
+        assert!(!markdown.contains("**Places**"));
     }
 
     #[test]
@@ -1394,10 +1812,6 @@ mod tests {
         );
 
         assert_eq!(labels, ("borrowed".into(), "message".into()));
-        assert_eq!(
-            evidence_label(&labels.0, &source.label),
-            "borrowed (MIR _28)"
-        );
 
         let graph = GraphSlice {
             schema_version: 1,
@@ -1435,9 +1849,162 @@ mod tests {
             range,
         );
 
-        assert!(markdown.contains("`message` keeps ownership. `borrowed` may read"));
-        assert!(markdown.contains("`message` → **borrows shared** → `borrowed`"));
-        assert!(markdown.contains("**From** · `message (MIR *(_23.0))`"));
-        assert!(markdown.contains("**To** · `borrowed (MIR _28)`"));
+        assert!(markdown.contains("`borrowed` is a read-only view of `message`"));
+        assert!(markdown.contains("`message` ── shared view ─→ `borrowed`"));
+        assert!(!markdown.contains("*(_23.0)"));
+        assert!(!markdown.contains("_28"));
+        assert!(!markdown.contains("MIR"));
+    }
+
+    #[test]
+    fn moved_call_argument_is_explained_in_source_terms_only() {
+        let token = GraphNode {
+            id: "token-mir".into(),
+            kind: "place".into(),
+            label: "_19".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::new(),
+        };
+        let parameter = GraphNode {
+            id: "value".into(),
+            kind: "binding".into(),
+            label: "value".into(),
+            location: None,
+            certainty: "source_resolved".into(),
+            properties: BTreeMap::from([("user_binding".into(), Value::Bool(true))]),
+        };
+        let edge = GraphEdge {
+            kind: "moves_to".into(),
+            source: token.id.clone(),
+            target: parameter.id.clone(),
+            location: None,
+            order: Some(0),
+            certainty: "compiler_proven".into(),
+            explanation: Some("argument 1 binds to consume parameter 1".into()),
+        };
+        let graph = GraphSlice {
+            schema_version: 1,
+            revision_id: "f68f9039".into(),
+            revision_sequence: 26,
+            source_fingerprint: "360bcbc6".into(),
+            requested_document_version: Some(0),
+            analyzed_document_version: Some(0),
+            fresh: true,
+            truncated: false,
+            nodes: vec![token, parameter],
+            edges: vec![edge],
+        };
+        let nodes: HashMap<_, _> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let range = crate::semantic::Range {
+            start: crate::semantic::Position {
+                line: 0,
+                character: 25,
+            },
+            end: crate::semantic::Position {
+                line: 0,
+                character: 39,
+            },
+        };
+        let markdown = edge_markdown(
+            &graph.edges[0],
+            edge_presentation(&graph.edges[0]).unwrap(),
+            &graph.nodes[0],
+            &graph.nodes[1],
+            &graph,
+            &nodes,
+            "let token_length: usize = consume(token);\n",
+            range,
+        );
+
+        assert!(markdown.contains(
+            "Calling `consume(token)` moves `token` into the `value` parameter of `consume`"
+        ));
+        assert!(markdown.contains("`token` cannot be used again after this line"));
+        assert!(!markdown.contains("This value is transferred rather than copied"));
+        assert!(markdown.contains("**Keep using `token`**"));
+        assert!(markdown.contains("caller: `token` → `consume` → callee: `value`"));
+        for forbidden in ["MIR", "_19", "revision", "schema", "360bcbc6", "f68f9039"] {
+            assert!(
+                !markdown.contains(forbidden),
+                "leaked {forbidden}: {markdown}"
+            );
+        }
+    }
+
+    #[test]
+    fn returned_method_result_uses_the_expression_the_developer_wrote() {
+        let function = GraphNode {
+            id: "callee".into(),
+            kind: "function".into(),
+            label: "<alloc::string::String as core::convert::AsRef<str>>::as_ref".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::new(),
+        };
+        let result = GraphNode {
+            id: "result".into(),
+            kind: "place".into(),
+            label: "_28".into(),
+            location: None,
+            certainty: "compiler_proven".into(),
+            properties: BTreeMap::new(),
+        };
+        let edge = GraphEdge {
+            kind: "returns_as".into(),
+            source: function.id.clone(),
+            target: result.id.clone(),
+            location: None,
+            order: Some(0),
+            certainty: "compiler_proven".into(),
+            explanation: None,
+        };
+        let graph = GraphSlice {
+            schema_version: 1,
+            revision_id: "revision".into(),
+            revision_sequence: 1,
+            source_fingerprint: "fingerprint".into(),
+            requested_document_version: Some(1),
+            analyzed_document_version: Some(1),
+            fresh: true,
+            truncated: false,
+            nodes: vec![function, result],
+            edges: vec![edge],
+        };
+        let nodes: HashMap<_, _> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let range = crate::semantic::Range {
+            start: crate::semantic::Position {
+                line: 0,
+                character: 4,
+            },
+            end: crate::semantic::Position {
+                line: 0,
+                character: 36,
+            },
+        };
+        let markdown = edge_markdown(
+            &graph.edges[0],
+            edge_presentation(&graph.edges[0]).unwrap(),
+            &graph.nodes[0],
+            &graph.nodes[1],
+            &graph,
+            &nodes,
+            "let borrowed = message.as_str();\n",
+            range,
+        );
+
+        assert!(markdown.contains("result of `message.as_str()` is stored as `borrowed`"));
+        assert!(markdown.contains("`message.as_str()` → `borrowed`"));
+        assert!(!markdown.contains("alloc::"));
+        assert!(!markdown.contains("_28"));
+        assert!(!markdown.contains("MIR"));
     }
 }

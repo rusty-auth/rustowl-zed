@@ -19,17 +19,19 @@ The product has four connected surfaces:
 4. **Agent context** — bounded MCP tools and prompts available in Zed's Agent
    Panel.
 
-## Implementation snapshot — 2026-08-10
+## Implementation snapshot — 2026-08-12
 
 M0–M5 are implemented in the `0.1.3` marketplace candidate: deterministic
-compiler graph extraction, indexed LSP methods, embedded Helix persistence,
-automatic Zed visuals, layered hover explanations, six read-only MCP tools,
-and three audience-aware agent prompts. M7 packaging is implemented and its
-six-platform archive matrix passes automated content, checksum, manifest, SBOM,
-and binary-format verification. M8 has passed the live macOS ARM64 editor and
-packaged LSP/MCP clean-install gates; cross-platform visual, stress, and
-performance gates remain mandatory before a tag is promoted. M9 remains the
-upstream marketplace submission.
+compiler graph extraction, resolved interprocedural flow, exact rustc
+coroutine-layout evidence, indexed LSP methods, embedded Helix persistence,
+immutable portable fallback, automatic Zed visuals, compact human hover
+explanations, six read-only MCP tools, and three audience-aware agent prompts.
+M7 packaging is implemented and its six-platform archive matrix checks content,
+checksums, manifest, SBOM, and binary format; the extension now verifies the
+extracted runtime before execution. M8 has passed live macOS ARM64 editor,
+compiler-artifact, rapid-edit ordering, injected Helix-failure, and bounded MCP
+gates. Cross-platform visual and performance characterization remain explicit
+release follow-ups. M9 remains the upstream marketplace submission.
 
 M6 is not part of the static-analysis release. Runtime capture remains a
 separate, explicitly opt-in design so observed values and paths can never be
@@ -45,8 +47,8 @@ confused with compiler-proven possibilities.
 - Agent tools return the smallest useful subgraph and always report freshness.
 - The engine emits structured data. Mermaid and Markdown are renderers.
 - Default explanations use source-level names and plain consequences; raw MIR
-  places, certainty, and revision provenance remain available in an advanced
-  compiler-evidence section.
+  places, certainty, revision provenance, and larger traces remain available
+  to bounded graph/agent queries rather than being dumped into editor hovers.
 - Upstream RustOwl attribution, history, and MPL-2.0 requirements remain intact.
 
 ## Product truth and scope boundaries
@@ -91,14 +93,16 @@ flowchart TB
     ENGINE --> RUSTC["rustc MIR + borrow checker + Polonius"]
     RUSTC --> EXTRACT["Deterministic graph extraction"]
     EXTRACT --> MEMORY["In-memory active revision"]
+    EXTRACT --> PORTABLE["Immutable portable snapshot"]
     EXTRACT --> STAGE["HelixDB staged revision"]
     STAGE --> VALIDATE["Count + integrity validation"]
     VALIDATE --> ACTIVE["Atomic active-revision switch"]
 
     ADAPTER --> ENGINE
     ENGINE --> MEMORY
-    MCP --> READER["Read-only HelixDB handle"]
+    MCP --> READER["Newest validated durable revision"]
     READER --> ACTIVE
+    READER --> PORTABLE
 
     MEMORY --> INLINE["Inline hints + semantic ranges"]
     MEMORY --> HOVER["Compact hover timeline"]
@@ -106,10 +110,13 @@ flowchart TB
     ACTIVE --> AGENT["Zed Agent / ACP-forwarded agents"]
 ```
 
-The LSP process is the only graph writer. The MCP process opens the same
-workspace database read-only. Both can serve the last complete revision. The
-LSP keeps a bounded in-memory representation of the active and currently
-visible subgraphs so common editor requests do not touch the database.
+The LSP process is the only graph writer. It publishes the immutable portable
+snapshot before entering HelixDB's serialized write path. The MCP process opens
+HelixDB read-only, validates the portable snapshot independently, and selects
+the higher monotonic revision sequence. This preserves exact agent/editor
+convergence when Helix is disabled, locked, corrupt, or completing an older
+write. The LSP keeps a bounded in-memory representation of the active and
+currently visible subgraphs so common editor requests never depend on storage.
 
 ## Runtime packaging
 
@@ -134,7 +141,10 @@ rustowl-zed-runtime-<target>/
 HelixDB is linked into `rustowl`; users do not install Docker, start a daemon,
 create a cloud account, or configure a database URL. The `rustowl` LSP and
 `rustowl-mcp` server are built from the same engine revision and shipped in the
-same archive so graph schema and protocol versions cannot drift.
+same archive so graph schema and protocol versions cannot drift. Before making
+native files executable, the extension validates the compatibility manifest
+and every file named by the archive's SHA-256 manifest; missing, duplicated,
+unsafe-path, or mismatched entries fail closed.
 
 The extension registers both capabilities:
 
@@ -210,11 +220,12 @@ The indexer follows this sequence:
 3. Convert all completed crate results into a deterministic graph snapshot.
 4. Validate local IDs, source spans, edge endpoints, and graph invariants.
 5. Publish the in-memory snapshot for editor reads.
-6. Write a new staged Helix revision in batches.
-7. Validate persisted counts and sample traversals.
-8. Atomically mark the revision active.
-9. Notify LSP and MCP consumers of the new revision.
-10. Retain the previous complete revision until compaction succeeds.
+6. Atomically publish the bounded immutable portable snapshot.
+7. Write a new staged Helix revision in serialized batches.
+8. Validate persisted counts and sample traversals.
+9. Atomically mark the Helix revision active if its sequence is still current.
+10. Notify LSP and MCP consumers of the new revision.
+11. Retain the previous complete Helix generation until compaction succeeds.
 
 Cancelled, incomplete, or invalid revisions are never activated. Startup
 recovers the newest valid complete revision and quarantines abandoned staging
@@ -889,23 +900,23 @@ graph schema. Runtime instrumentation follows the static/MCP truth contract,
 and unified packaging must contain actual tested engine, recorder, and MCP
 artifacts rather than placeholders.
 
-## Immediate implementation queue
+## Remaining GA queue
 
-1. Add graph IDs, revision, node, edge, certainty, span, and snapshot types to
-   the engine fork.
-2. Build deterministic extraction for existing `Crate`, `File`, `Function`,
-   `MirDecl`, `MirStatement`, and `MirTerminator` models.
-3. Add fixture snapshot tests and graph integrity validation.
-4. Implement in-memory range/trace/map queries.
-5. Specify and test the new LSP JSON contracts.
-6. Prototype pinned embedded HelixDB behind the graph-store interface.
-7. Benchmark persistence before wiring it into editor startup.
-8. Replace adapter prefetch fan-out with `inspectRange`.
-9. Add MCP only after a separate process can read an active graph revision
-   safely.
+1. Pass the final tagged six-target native archive matrix and verify every
+   retained artifact from the exact marketplace commit.
+2. Perform clean-install LSP and MCP smokes from the published macOS archive,
+   plus Windows/Linux launch smokes in release automation.
+3. Record the performance objectives on the representative benchmark corpus;
+   publish measured numbers instead of substituting targets as claims.
+4. Complete the cross-platform visual checklist, including layered native Zed
+   hovers, narrow windows, long source names, and non-default themes.
+5. Pin the released repository commit in `zed-industries/extensions`, rerun
+   registry sorting/validation, and submit the marketplace pull request.
+6. Keep dynamic dispatch, macros, FFI, raw pointers, and unsafe boundaries
+   explicitly conservative or unresolved while the fidelity matrix expands.
 
-This ordering delivers immediate editor speed improvements while protecting
-the deeper workspace and agent vision from premature storage coupling.
+Runtime-value capture remains a separately consented post-GA lane and is not a
+blocker or implicit claim of the static `0.1.3` release.
 
 ## Design references
 

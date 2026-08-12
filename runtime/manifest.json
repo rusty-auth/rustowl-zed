@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "extensionVersion": "0.1.3",
   "engineVersion": "0.4.0",
-  "graphEngineVersion": "0.4.0+rustyauth.3",
+  "graphEngineVersion": "0.4.0+rustyauth.5",
   "ownershipGraphSchemaVersion": 1,
   "binaries": [
     "rustowl-zed-adapter",
@@ -14,7 +14,8 @@
     "backend": "embedded-helixdb",
     "networkRequired": false,
     "writer": "rustowl",
-    "readers": ["rustowl", "rustowl-mcp"]
+    "readers": ["rustowl", "rustowl-mcp"],
+    "portableFallback": "immutable-json-snapshot"
   },
   "evidencePolicy": {
     "compilerFacts": "revisioned",

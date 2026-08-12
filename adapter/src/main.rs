@@ -1007,11 +1007,15 @@ fn hover_result(
         .filter(|decoration| contains(decoration.range, position))
         .collect();
     matching.sort_by_key(|decoration| {
-        std::cmp::Reverse(
+        std::cmp::Reverse((
+            decoration
+                .hover_text
+                .as_deref()
+                .is_some_and(|text| text.starts_with("### RustOwl ·")),
             decoration_presentation(&decoration.kind)
                 .map(|presentation| presentation.priority)
                 .unwrap_or_default(),
-        )
+        ))
     });
 
     if matching.is_empty() && is_analyzed && status.and_then(Value::as_str) == Some("finished") {
@@ -1044,13 +1048,7 @@ fn hover_result(
             let Some(presentation) = decoration_presentation(&decoration.kind) else {
                 continue;
             };
-            if (!primary_is_indexed_graph
-                || !matches!(
-                    decoration.kind.as_str(),
-                    "lifetime" | "definitely_live" | "maybe_initialized"
-                ))
-                && also_here.len() < 4
-            {
+            if !primary_is_indexed_graph && also_here.len() < 4 {
                 also_here.push(presentation.title);
             }
         }
@@ -1292,6 +1290,50 @@ mod tests {
         assert!(markdown.contains("**Flow** · `L3 shared borrow` → `L4 last use`"));
         assert!(!markdown.contains("**Analysis**"));
         assert_eq!(hover["range"], json!(range));
+    }
+
+    #[test]
+    fn prefers_compiler_graph_evidence_over_the_legacy_cursor_report() {
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 19,
+            },
+            end: Position {
+                line: 2,
+                character: 27,
+            },
+        };
+        let graph_markdown = "### RustOwl · Shared borrow\n\nCompiler-backed summary.\n\n**What this means** · `message` remains owned.\n\n**Compiler evidence**\n\n- **MIR flow** · `borrows shared`";
+        let decorations = vec![
+            Decoration {
+                kind: "imm_borrow".into(),
+                range,
+                hover_text: Some("immutable borrow".into()),
+                overlapped: false,
+            },
+            Decoration {
+                kind: "imm_borrow".into(),
+                range,
+                hover_text: Some(graph_markdown.into()),
+                overlapped: false,
+            },
+        ];
+
+        let hover = hover_result(
+            Position {
+                line: 2,
+                character: 21,
+            },
+            &decorations,
+            Some(&json!("finished")),
+            true,
+            Some("**Flow** · legacy heuristic"),
+        );
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.starts_with(graph_markdown));
+        assert!(!markdown.contains("legacy heuristic"));
+        assert!(!markdown.contains("RustOwl report"));
     }
 
     #[test]

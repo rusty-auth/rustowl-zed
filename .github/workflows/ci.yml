@@ -21,6 +21,8 @@ jobs:
           cargo fmt --manifest-path adapter/Cargo.toml -- --check
       - name: Check Zed extension
         run: cargo check --locked --target wasm32-wasip2
+      - name: Test managed runtime verification
+        run: cargo test --locked
       - name: Lint adapter
         run: cargo clippy --locked --manifest-path adapter/Cargo.toml --all-targets -- -D warnings
       - name: Test adapter
@@ -41,3 +43,28 @@ jobs:
       - name: Test engine, Helix recovery, and MCP tools
         working-directory: engine
         run: cargo test --locked
+      - name: Build current debug runtime for protocol smokes
+        run: |
+          cargo build --locked --manifest-path ../adapter/Cargo.toml
+          cargo build --locked --bins
+        working-directory: engine
+      - name: Verify compiler graph and exact async causality
+        env:
+          RUSTOWL_AUTO_SETUP: "0"
+          RUSTOWLC: ${{ github.workspace }}/engine/target/debug/rustowlc
+          RUSTOWLC_WORKSPACE_WRAPPER: ${{ github.workspace }}/engine/target/debug/rustowlc
+        run: >-
+          node scripts/compiler-graph-smoke.mjs
+          engine/target/debug/rustowl
+      - name: Verify editor and agent memory fallback end to end
+        run: >-
+          node scripts/memory-fallback-smoke.mjs
+          engine/target/debug/rustowl
+          engine/target/debug/rustowlc
+          engine/target/debug/rustowl-mcp
+      - name: Verify rapid edits cannot publish an older artifact
+        run: >-
+          node scripts/rapid-edit-smoke.mjs
+          engine/target/debug/rustowl
+          engine/target/debug/rustowlc
+          engine/target/debug/rustowl-mcp

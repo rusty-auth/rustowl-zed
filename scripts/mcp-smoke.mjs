@@ -80,6 +80,27 @@ function toolResult(result) {
   return result.structuredContent;
 }
 
+function assertAgentSafePayload(value, label) {
+  const serialized = JSON.stringify(value);
+  if (serialized.includes(workspace)) {
+    throw new Error(`${label} leaked the absolute workspace path`);
+  }
+  if (serialized.length > 1_000_000) {
+    throw new Error(`${label} exceeded the 1 MB smoke-test response ceiling`);
+  }
+}
+
+function assertFreshness(value, label) {
+  if (
+    !value?.status ||
+    !value?.basis ||
+    !value?.unsavedEditorBuffers ||
+    typeof value.workspaceScanComplete !== "boolean"
+  ) {
+    throw new Error(`${label} omitted actionable freshness limitations`);
+  }
+}
+
 async function main() {
   const initialized = await request("initialize", {
     protocolVersion: "2025-11-25",
@@ -123,6 +144,11 @@ async function main() {
   if (summary.workspaces?.[0]?.revisionSequence === undefined) {
     throw new Error("workspace summary omitted its revision");
   }
+  if (summary.workspaces[0].workspaceRoot !== ".") {
+    throw new Error("workspace summary did not use a workspace-relative root");
+  }
+  assertFreshness(summary.workspaces[0].freshness, "workspace summary");
+  assertAgentSafePayload(summary, "workspace summary");
 
   const inspection = toolResult(
     await request("tools/call", {
@@ -137,6 +163,11 @@ async function main() {
   );
   const nodes = inspection.evidence?.nodes ?? [];
   const edges = inspection.evidence?.edges ?? [];
+  if (!inspection.completeness || inspection.workspaceRoot !== ".") {
+    throw new Error("range inspection omitted bounds or workspace-relative metadata");
+  }
+  assertFreshness(inspection.freshness, "range inspection");
+  assertAgentSafePayload(inspection, "range inspection");
   const borrowEdge = edges.find((edge) => edge.kind === "borrows_shared");
   const borrowNode = nodes.find((node) => node.kind === "borrow_event");
   if (nodes.length < 2 || (!borrowEdge && !borrowNode)) {
@@ -159,6 +190,11 @@ async function main() {
   if (!trace.evidence?.nodes?.length) {
     throw new Error("ownership trace returned no evidence");
   }
+  if (!trace.completeness) {
+    throw new Error("ownership trace omitted completeness metadata");
+  }
+  assertFreshness(trace.freshness, "ownership trace");
+  assertAgentSafePayload(trace, "ownership trace");
 
   const diagram = toolResult(
     await request("tools/call", {
@@ -169,6 +205,53 @@ async function main() {
   if (!diagram.mermaid?.startsWith("flowchart LR")) {
     throw new Error("Mermaid ownership diagram was not rendered");
   }
+  assertAgentSafePayload(diagram, "Mermaid trace");
+
+  const bounded = toolResult(
+    await request("tools/call", {
+      name: "rustowl_inspect_range",
+      arguments: {
+        file: inspectionFile,
+        start_line: 1,
+        end_line: 30,
+        max_nodes: 1,
+        max_edges: 1,
+        max_depth: 1,
+      },
+    }),
+  );
+  if (
+    bounded.evidence?.nodes?.length > 1 ||
+    bounded.evidence?.edges?.length > 1 ||
+    bounded.completeness?.complete !== false ||
+    bounded.completeness?.omissions?.present !== true
+  ) {
+    throw new Error(
+      `bounded inspection did not disclose omissions: ${JSON.stringify(bounded.completeness)}`,
+    );
+  }
+
+  const search = toolResult(
+    await request("tools/call", {
+      name: "rustowl_search",
+      arguments: { query: "message", limit: 1 },
+    }),
+  );
+  if (!search.completeness || search.matches?.length > 1) {
+    throw new Error("search omitted exact result/omission counts");
+  }
+  assertAgentSafePayload(search, "search");
+
+  const asyncState = toolResult(
+    await request("tools/call", {
+      name: "rustowl_async_state",
+      arguments: { file: inspectionFile, limit: 1 },
+    }),
+  );
+  if (!asyncState.completeness || !Array.isArray(asyncState.suspensionPoints)) {
+    throw new Error("async state omitted bounded completeness metadata");
+  }
+  assertAgentSafePayload(asyncState, "async state");
 
   console.log(
     `RustOwl MCP smoke test passed (${tools.tools.length} tools, ${prompts.prompts.length} prompts, revision ${summary.workspaces[0].revisionSequence}).`,

@@ -56,12 +56,15 @@ trait GraphStore {
 }
 ```
 
-The in-memory adjacency graph serves hover and inline requests. Helix persists
-native indexed nodes/edges plus the canonical revision snapshot in two bounded
-A/B generations for cross-file exploration and read-only MCP queries. The new
-generation is validated before an atomic slot-pointer switch; the other is the
-rollback generation. This keeps the hot editor path independent from database
-startup and durability work.
+The in-memory adjacency graph serves hover and inline requests. Every valid
+revision is also atomically written to a bounded immutable portable snapshot
+before Helix publication begins. Helix persists native indexed nodes/edges plus
+the canonical revision snapshot in two bounded A/B generations for cross-file
+exploration and read-only MCP queries. A separate MCP process validates both
+durable sources and selects the higher monotonic revision sequence. The new
+Helix generation is validated before an atomic slot-pointer switch; the other
+is the rollback generation. This keeps the hot editor path independent from
+database startup and durability work without leaving agents Helix-dependent.
 
 The parity, rotation, reader, regression, and recovery tests enforce that the
 editor experience remains available when persistence is disabled or

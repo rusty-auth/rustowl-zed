@@ -27,6 +27,8 @@ guide. Before opening the registry pull request:
 5. Verify each archive contains four binaries, the compatibility manifest,
    CycloneDX SBOM, checksums, licenses, and notices.
 6. Perform clean-install LSP and MCP smoke tests from the published archive.
+   The extension must reject a tampered checksum, a missing compiler wrapper,
+   or an incompatible graph-schema manifest before executing native code.
 
 Zed publishes community extensions from
 [`zed-industries/extensions`](https://github.com/zed-industries/extensions).
@@ -54,10 +56,17 @@ The pull-request description should state that RustOwl:
 - complements Zed's native rust-analyzer rather than replacing it;
 - downloads a target-specific native language/MCP runtime through the Zed
   extension API rather than embedding it in the extension WASM;
+- validates the extracted runtime manifest and every checksummed file before
+  executing it;
 - analyzes and persists compiler evidence locally;
 - exposes only bounded, read-only MCP tools;
 - attributes Kota Mori's original RustOwl work and preserves MPL-2.0; and
 - has passed the linked clean-install and live-editor evidence matrix.
+
+This follows Zed's current publishing prerequisites: the public root MIT
+license covers the extension code, the ID/name do not contain the reserved
+words “Zed” or “extension”, and the native language/MCP servers are downloaded
+through the extension API rather than embedded in the WASM.
 
 For an update, advance the `extensions/rustowl` submodule, update the registry
 version to match `extension.toml`, rerun `pnpm sort-extensions`, and open a new
