@@ -56,6 +56,18 @@ jobs:
         # rustc-private binaries cannot use fat LTO on Windows. RustOwl's
         # windows-release profile inherits release while disabling LTO.
         run: cargo build --locked --profile ${{ matrix.engine_profile }} --bins
+      - name: Launch native runtime binaries (Unix)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          engine/target/${{ matrix.engine_profile }}/rustowl --version
+          engine/target/${{ matrix.engine_profile }}/rustowl-mcp --help
+      - name: Launch native runtime binaries (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          & "engine/target/${{ matrix.engine_profile }}/rustowl.exe" --version
+          & "engine/target/${{ matrix.engine_profile }}/rustowl-mcp.exe" --help
       - name: Generate CycloneDX software bill of materials
         shell: bash
         run: |

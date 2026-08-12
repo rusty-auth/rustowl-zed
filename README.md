@@ -137,7 +137,7 @@ than screenshots alone:
 | Gate | Verified result |
 | --- | --- |
 | **Live Zed Preview** | RustOwl underlines, inline hints, and layered hovers run beside `rust-analyzer` in a real editor session. |
-| **Native release matrix** | Release automation builds and verifies checksummed runtimes for macOS, Windows, and Linux on ARM64 and x86_64. |
+| **Native release matrix** | Release automation builds, launches, and verifies checksummed runtimes for macOS, Windows, and Linux on ARM64 and x86_64. |
 | **Exact compiler artifact** | Source-to-graph tests prove resolved calls, parameters, returns, generics, trait dispatch, closure captures, and exact rustc coroutine-layout fields. |
 | **Rapid-edit safety** | A repeated v1 → cancelled-v2 → v3 test proves the editor, portable snapshot, Helix, and a fresh MCP process converge on v3. |
 | **Injected persistence failure** | With Helix disabled, editor visuals remain live and a separate agent process reads the immutable portable snapshot. |

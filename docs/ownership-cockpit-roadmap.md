@@ -905,7 +905,8 @@ artifacts rather than placeholders.
 1. Pass the final tagged six-target native archive matrix and verify every
    retained artifact from the exact marketplace commit.
 2. Perform clean-install LSP and MCP smokes from the published macOS archive,
-   plus Windows/Linux launch smokes in release automation.
+   then extend the protocol-level smoke corpus beyond macOS. Native RustOwl and
+   MCP binary launches are already enforced on every release-matrix runner.
 3. Record the performance objectives on the representative benchmark corpus;
    publish measured numbers instead of substituting targets as claims.
 4. Complete the cross-platform visual checklist, including layered native Zed

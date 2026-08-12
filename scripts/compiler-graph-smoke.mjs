@@ -232,7 +232,11 @@ async function main() {
     if (!body) throw new Error(`compiler workspace map omitted async body ${functionName}`);
     const trace = await request("rustowl/ownershipGraph", {
       start: body.id,
-      direction: "both",
+      // Traversing incoming declaration/container edges walks from this async
+      // body back into the entire workspace and can legitimately exhaust the
+      // bounded response before reaching its retained-field blocker edges.
+      // The exact causality under test is emitted outward from the body.
+      direction: "outgoing",
       limits: { max_nodes: 500, max_edges: 1000, max_depth: 4 },
     });
     asyncSlices.push(trace.result);
